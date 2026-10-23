@@ -52,7 +52,7 @@ table{width:100%;border-collapse:collapse;margin-top:12px}
 th,td{padding:10px;border:1px solid #dce2ec;text-align:left}
 th{background:#eaf0ff}
 .empty{color:#667085;padding:15px 0}
-.limits-grid{display:grid;grid-template-columns:repeat(5,minmax(85px,1fr));gap:9px;margin-top:12px}
+.limits-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:12px;margin-top:12px}
 .limit-field label{font-size:13px}
 footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 #syncBar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;padding:10px 14px;background:#eef4ff;border-bottom:1px solid #d7e0f5;font-size:14px;color:#243d7d}
@@ -65,7 +65,7 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 @media(max-width:650px){
  .class-card,.subject-heading{grid-template-columns:1fr}
  .period-row{grid-template-columns:1fr;gap:8px}
- .limits-grid{grid-template-columns:repeat(2,minmax(85px,1fr))}
+ .limits-grid{grid-template-columns:1fr}
 }
 </style>
 </head>
@@ -113,14 +113,14 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 <p class="muted">
 Create each subject once. Add all the teachers who can teach it.
 Teacher names must be unique across every subject.
-Then set how many lessons per week each year is allowed to have.
-These limits apply separately to each class in that year.
+Then set how many lessons per week each year group is allowed to have.
+Years 1–5 share one limit, Years 8–10 share one limit, and Years 6 and 7 are set separately.
 </p>
 
 <div class="notice">
-<strong>Example:</strong> Mathematics could have a limit of 4 lessons in Year 1
-and 6 lessons in Year 10. Every Year 1 class can have up to 4 Mathematics
-lessons per week, while every Year 10 class can have up to 6.
+<strong>Example:</strong> Mathematics could have a limit of 4 lessons for Years 1–5
+and 6 lessons for Years 8–10. Every class in Years 1–5 can have up to 4 Mathematics
+lessons per week, while every class in Years 8–10 can have up to 6.
 </div>
 
 <div id="subjectFields"></div>
@@ -327,13 +327,29 @@ function makeDefaultData(){
  };
 }
 
+const YEAR_LIMIT_GROUPS=[
+ {id:"1-5",label:"Years 1–5",years:[1,2,3,4,5]},
+ {id:"6",label:"Year 6",years:[6]},
+ {id:"7",label:"Year 7",years:[7]},
+ {id:"8-10",label:"Years 8–10",years:[8,9,10]}
+];
+
 function normaliseLimits(limits){
  const result={};
  for(let year=1;year<=10;year++){
   const n=Number(limits&&limits[year]);
   result[year]=Number.isInteger(n)&&n>=0&&n<=30?n:0;
  }
+ // Keep each year-group on one shared value (use the highest so old data stays valid).
+ YEAR_LIMIT_GROUPS.forEach(group=>{
+  const value=Math.max(...group.years.map(year=>result[year]||0));
+  group.years.forEach(year=>{result[year]=value;});
+ });
  return result;
+}
+
+function groupLimitValue(limits,group){
+ return Math.max(...group.years.map(year=>Number(limits&&limits[year]||0)));
 }
 
 function normaliseData(raw){
@@ -696,12 +712,11 @@ function renderSubjects(){
    '</div>'
   ).join("");
 
-  const limitFields=Array.from({length:10},(_,n)=>{
-   const year=n+1;
-   return '<div class="limit-field"><label for="limit_'+index+'_'+year+'">Year '+year+'</label>'+
-    '<input type="number" min="0" max="30" step="1" id="limit_'+index+'_'+year+
-    '" value="'+Number(subject.limits[year]||0)+'" aria-label="Year '+year+' weekly lesson limit"></div>';
-  }).join("");
+  const limitFields=YEAR_LIMIT_GROUPS.map(group=>
+   '<div class="limit-field"><label for="limit_'+index+'_'+group.id+'">'+group.label+'</label>'+
+   '<input type="number" min="0" max="30" step="1" id="limit_'+index+'_'+group.id+
+   '" value="'+groupLimitValue(subject.limits,group)+'" aria-label="'+group.label+' weekly lesson limit"></div>'
+  ).join("");
 
   card.innerHTML=
    '<div class="subject-summary">'+
@@ -720,7 +735,7 @@ function renderSubjects(){
     '<div class="teacher-list">'+teacherRows+'</div>'+
     '<button type="button" class="addTeacher" data-index="'+index+'">+ Add teacher</button>'+
     '<h3>Maximum lessons per class per week</h3>'+
-    '<p class="muted">Set a separate limit for each year. Use 0 if classes in that year must not have this subject.</p>'+
+    '<p class="muted">Set one limit for Years 1–5, separate limits for Year 6 and Year 7, and one limit for Years 8–10. Use 0 if that group must not have this subject.</p>'+
     '<div class="limits-grid">'+limitFields+'</div>'+
     '<div class="actions"><button type="button" class="danger removeSubject" data-index="'+index+'">Remove subject</button></div>'+
    '</div>';
@@ -806,15 +821,15 @@ function collectSubjectInputs(validate){
   }
 
   const limits={};
-  for(let year=1;year<=10;year++){
-   const input=document.getElementById("limit_"+i+"_"+year);
-   const value=input?Number(input.value):Number(original.limits[year]||0);
+  for(const group of YEAR_LIMIT_GROUPS){
+   const input=document.getElementById("limit_"+i+"_"+group.id);
+   const value=input?Number(input.value):groupLimitValue(original.limits,group);
 
    if(!Number.isInteger(value)||value<0||value>30){
-    if(validate) showMessage("subjectMessage","Year "+year+" limits must be whole numbers from 0 to 30.","warning");
+    if(validate) showMessage("subjectMessage",group.label+" limits must be whole numbers from 0 to 30.","warning");
     return null;
    }
-   limits[year]=value;
+   group.years.forEach(year=>{limits[year]=value;});
   }
 
   if(validate&&!subjectName){
