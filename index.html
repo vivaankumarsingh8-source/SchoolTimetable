@@ -31,6 +31,12 @@ input,select{width:100%;border:1px solid #cbd5e1;border-radius:6px;padding:9px;b
 .class-card,.subject-card{border:1px solid #dce2ec;border-radius:10px;padding:14px;margin-bottom:14px}
 .class-card{display:grid;grid-template-columns:2fr 1fr;gap:12px;align-items:end}
 .subject-heading{display:grid;grid-template-columns:2fr 1fr;gap:12px;align-items:end}
+.subject-summary{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.subject-summary .toggle-subject{background:#e6ecfb;color:#243d7d;min-width:42px}
+.subject-summary .subject-title{font-weight:bold;flex:1;min-width:140px}
+.subject-summary .subject-meta{color:#667085;font-size:13px}
+.subject-body{margin-top:14px;padding-top:14px;border-top:1px solid #e5e7eb}
+.subject-card.collapsed .subject-body{display:none}
 .teacher-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;margin:8px 0}
 .teacher-list{margin:12px 0}
 .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
@@ -664,6 +670,8 @@ document.getElementById("saveClasses").addEventListener("click",()=>{
 });
 
 // Subjects, teacher lists and limits
+const expandedSubjectIds=new Set();
+
 function renderSubjects(){
  const container=document.getElementById("subjectFields");
  container.innerHTML="";
@@ -675,8 +683,11 @@ function renderSubjects(){
 
  data.subjects.forEach((subject,index)=>{
   const card=document.createElement("div");
-  card.className="subject-card";
+  const isOpen=expandedSubjectIds.has(subject.id);
+  card.className="subject-card"+(isOpen?"":" collapsed");
+  card.dataset.subjectId=subject.id;
 
+  const namedTeachers=subject.teachers.filter(t=>String(t.name||"").trim()).length;
   const teacherRows=subject.teachers.map((teacher,teacherIndex)=>
    '<div class="teacher-row">'+
     '<div><label for="teacher_'+index+'_'+teacherIndex+'">Teacher '+(teacherIndex+1)+'</label>'+
@@ -693,27 +704,45 @@ function renderSubjects(){
   }).join("");
 
   card.innerHTML=
-   '<div class="subject-heading">'+
-    '<div><label for="subjectName'+index+'">Subject name</label>'+
-    '<input id="subjectName'+index+'" maxlength="80" value="'+esc(subject.name)+'" placeholder="e.g. Mathematics"></div>'+
-    '<div><label>Subject ID</label><input value="'+esc(subject.name||("Subject "+(index+1)))+'" disabled></div>'+
+   '<div class="subject-summary">'+
+    '<button type="button" class="toggle-subject" data-id="'+esc(subject.id)+'" aria-expanded="'+(isOpen?"true":"false")+'">'+(isOpen?"▾":"▸")+'</button>'+
+    '<div class="subject-title">'+(esc(subject.name)||("Subject "+(index+1)))+'</div>'+
+    '<div class="subject-meta">'+namedTeachers+" teacher"+(namedTeachers===1?"":"s")+(isOpen?"":" · click to open")+'</div>'+
    '</div>'+
-   '<h3>Teachers for this subject</h3>'+
-   '<p class="muted">Add every teacher who can teach this subject. You can choose the teacher separately for each lesson.</p>'+
-   '<div class="teacher-list">'+teacherRows+'</div>'+
-   '<button type="button" class="addTeacher" data-index="'+index+'">+ Add teacher</button>'+
-   '<h3>Maximum lessons per class per week</h3>'+
-   '<p class="muted">Set a separate limit for each year. Use 0 if classes in that year must not have this subject.</p>'+
-   '<div class="limits-grid">'+limitFields+'</div>'+
-   '<div class="actions"><button type="button" class="danger removeSubject" data-index="'+index+'">Remove subject</button></div>';
+   '<div class="subject-body">'+
+    '<div class="subject-heading">'+
+     '<div><label for="subjectName'+index+'">Subject name</label>'+
+     '<input id="subjectName'+index+'" maxlength="80" value="'+esc(subject.name)+'" placeholder="e.g. Mathematics"></div>'+
+     '<div><label>Subject ID</label><input value="'+esc(subject.name||("Subject "+(index+1)))+'" disabled></div>'+
+    '</div>'+
+    '<h3>Teachers for this subject</h3>'+
+    '<p class="muted">Add every teacher who can teach this subject. You can choose the teacher separately for each lesson.</p>'+
+    '<div class="teacher-list">'+teacherRows+'</div>'+
+    '<button type="button" class="addTeacher" data-index="'+index+'">+ Add teacher</button>'+
+    '<h3>Maximum lessons per class per week</h3>'+
+    '<p class="muted">Set a separate limit for each year. Use 0 if classes in that year must not have this subject.</p>'+
+    '<div class="limits-grid">'+limitFields+'</div>'+
+    '<div class="actions"><button type="button" class="danger removeSubject" data-index="'+index+'">Remove subject</button></div>'+
+   '</div>';
 
   container.appendChild(card);
+ });
+
+ container.querySelectorAll(".toggle-subject").forEach(button=>{
+  button.addEventListener("click",()=>{
+   collectSubjectInputs(false);
+   const id=button.dataset.id;
+   if(expandedSubjectIds.has(id)) expandedSubjectIds.delete(id);
+   else expandedSubjectIds.add(id);
+   renderSubjects();
+  });
  });
 
  container.querySelectorAll(".addTeacher").forEach(button=>{
   button.addEventListener("click",()=>{
    collectSubjectInputs(false);
    const s=data.subjects[Number(button.dataset.index)];
+   expandedSubjectIds.add(s.id);
    s.teachers.push({id:makeId(),name:""});
    renderSubjects();
   });
@@ -857,12 +886,14 @@ document.getElementById("addSubject").addEventListener("click",()=>{
  if(!proposed) return;
  data.subjects=proposed;
 
- data.subjects.push({
+ const newSubject={
   id:makeId(),
   name:"",
   teachers:[],
   limits:Object.fromEntries(Array.from({length:10},(_,i)=>[i+1,0]))
- });
+ };
+ data.subjects.push(newSubject);
+ expandedSubjectIds.add(newSubject.id);
 
  renderSubjects();
 });
@@ -980,16 +1011,9 @@ function renderEditor(){
     return;
    }
 
-   if(subject.teachers.filter(t=>t.name.trim()).length===0){
-    alert("Add at least one teacher to this subject in the Subjects & Teachers section.");
-    renderEditor();
-    return;
-   }
-
-   if(!teacherId||!teacherById(subject,teacherId)){
-    alert("Please choose a teacher for this lesson.");
-    return;
-   }
+   // Wait quietly until a teacher is chosen — no popup.
+   if(subject.teachers.filter(t=>t.name.trim()).length===0) return;
+   if(!teacherId||!teacherById(subject,teacherId)) return;
 
    data.lessons[k]={subjectId,teacherId};
    persist();
@@ -1018,14 +1042,19 @@ function renderEditor(){
     return;
    }
 
-   fillTeachers(subject.id,"");
-   saveSelection();
+   const namedTeachers=subject.teachers.filter(t=>t.name.trim());
+   fillTeachers(subject.id,namedTeachers.length===1?namedTeachers[0].id:"");
+   if(namedTeachers.length===1){
+    saveSelection();
+   }
+   // If several teachers (or none), wait for a teacher choice — no popup.
   });
 
   teacherSelect.addEventListener("change",()=>{
    if(!subjectSelect.value) return;
    if(!teacherSelect.value){
-    alert("Please choose a teacher for this lesson.");
+    delete data.lessons[k];
+    persist();
     return;
    }
    saveSelection();
