@@ -12,7 +12,7 @@ GitHub already works on this project. Someone 13+ who can open the GitHub accoun
 2. Leave **only** the `gist` scope checked.  
 3. Click **Generate token** and copy it.  
 4. Open the live site (or this project locally). The first time you save, paste the token when asked.  
-   Or paste it into `GIST_TOKEN` in `index.html` and `timetable.html`, then commit and push so every visitor can save without the prompt.
+   Or paste it into `GIST_TOKEN` in `index.html`, then commit and push so every visitor can save without the prompt.
 
 The token can only update gists. It cannot change your main repositories if you only enable `gist`.
 
