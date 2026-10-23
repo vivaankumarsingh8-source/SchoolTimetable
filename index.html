@@ -176,8 +176,6 @@ even if the lessons are different subjects.
 
 </div>
 
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
 <script>
 (function(){
 "use strict";
@@ -193,19 +191,22 @@ const PERIODS=[
  {number:6,start:"17:00",end:"18:30"}
 ];
 
-// Paste your Firebase web app config here (Firebase console → Project settings).
-const FIREBASE_CONFIG={
- apiKey:"PASTE_API_KEY",
- authDomain:"PASTE_PROJECT_ID.firebaseapp.com",
- databaseURL:"https://PASTE_PROJECT_ID-default-rtdb.firebaseio.com",
- projectId:"PASTE_PROJECT_ID",
- storageBucket:"PASTE_PROJECT_ID.appspot.com",
- messagingSenderId:"PASTE_SENDER_ID",
- appId:"PASTE_APP_ID"
-};
+// Shared store = public GitHub Gist (no Firebase / no Google age check).
+const GIST_ID="d73a4708d71dacb1017e4998ebf77f9c";
+const GIST_FILE="timetable.json";
+// Gist-only token (scope: gist). Ask a parent to create one at
+// https://github.com/settings/tokens/new?scopes=gist&description=SchoolTimetable
+// then paste it below, or leave blank to use the token saved in this browser once.
+const GIST_TOKEN="PASTE_GIST_TOKEN";
 
-const DB_PATH="timetable/shared";
-const CONFIG_READY=!String(FIREBASE_CONFIG.apiKey||"").startsWith("PASTE_");
+function getWriteToken(){
+ if(GIST_TOKEN&&!String(GIST_TOKEN).startsWith("PASTE_")) return GIST_TOKEN;
+ try{
+  return localStorage.getItem("schoolTimetableGistToken")||"";
+ }catch(e){
+  return "";
+ }
+}
 
 const HOUSES=["Ivrella","Emilora","Johansen","Caspiella","Everett"];
 
@@ -368,10 +369,11 @@ function normaliseData(raw){
 }
 
 let data=makeDefaultData();
-let dbRef=null;
 let writing=false;
 let persistTimer=null;
+let pollTimer=null;
 let uiReady=false;
+let lastRemoteJson="";
 
 function showLoadingError(message){
  const el=document.getElementById("loadingMessage");
@@ -393,20 +395,86 @@ function refreshUiFromData(){
 
 function applyRemoteData(raw){
  if(writing) return;
- data=normaliseData(raw);
+ const normalised=normaliseData(raw);
+ const asJson=JSON.stringify(normalised);
+ if(asJson===lastRemoteJson) return;
+ lastRemoteJson=asJson;
+ data=normalised;
  refreshUiFromData();
 }
 
+function gistRawUrl(){
+ return "https://gist.githubusercontent.com/vivaankumarsingh8-source/"+GIST_ID+"/raw/"+GIST_FILE+"?ts="+Date.now();
+}
+
+function loadSharedData(){
+ return fetch(gistRawUrl(),{cache:"no-store"}).then(function(res){
+  if(!res.ok) throw new Error("HTTP "+res.status);
+  return res.json();
+ });
+}
+
+function saveSharedData(payload){
+ const token=getWriteToken();
+ if(!token){
+  return Promise.reject(new Error(
+   "Missing save token. Ask a parent to create a GitHub token with only the gist scope, then paste it when prompted."
+  ));
+ }
+ return fetch("https://api.github.com/gists/"+GIST_ID,{
+  method:"PATCH",
+  headers:{
+   "Accept":"application/vnd.github+json",
+   "Authorization":"Bearer "+token,
+   "Content-Type":"application/json"
+  },
+  body:JSON.stringify({
+   files:{
+    "timetable.json":{content:JSON.stringify(payload)}
+   }
+  })
+ }).then(function(res){
+  if(!res.ok){
+   return res.json().catch(function(){ return {}; }).then(function(body){
+    throw new Error((body&&body.message)||("HTTP "+res.status));
+   });
+  }
+ });
+}
+
+function ensureWriteToken(){
+ if(getWriteToken()) return Promise.resolve(true);
+ const entered=window.prompt(
+  "Ask a parent for help (one-time).\n\n"+
+  "1. Open https://github.com/settings/tokens/new?scopes=gist&description=SchoolTimetable\n"+
+  "2. Generate a token with ONLY the gist scope\n"+
+  "3. Paste the token here\n\n"+
+  "This lets everyone with the site link share the same timetable."
+ );
+ if(!entered||!entered.trim()) return Promise.resolve(false);
+ try{
+  localStorage.setItem("schoolTimetableGistToken",entered.trim());
+ }catch(e){}
+ return Promise.resolve(!!getWriteToken());
+}
+
 function persist(){
- if(!dbRef) return;
  clearTimeout(persistTimer);
  persistTimer=setTimeout(function(){
-  writing=true;
-  dbRef.set(JSON.parse(JSON.stringify(data))).then(function(){
-   setTimeout(function(){ writing=false; },150);
-  }).catch(function(err){
-   writing=false;
-   alert("Could not save the shared timetable. "+(err&&err.message?err.message:""));
+  const payload=JSON.parse(JSON.stringify(data));
+  ensureWriteToken().then(function(ok){
+   if(!ok){
+    alert("Could not save to the shared timetable because no GitHub gist token is set.");
+    return;
+   }
+   writing=true;
+   saveSharedData(payload).then(function(){
+    lastRemoteJson=JSON.stringify(payload);
+    setTimeout(function(){ writing=false; },200);
+   }).catch(function(err){
+    writing=false;
+    alert("Could not save the shared timetable. "+(err&&err.message?err.message:""));
+   });
   });
  },300);
 }
@@ -1037,51 +1105,35 @@ function startUi(){
  renderConflicts();
 }
 
+function startPolling(){
+ if(pollTimer) clearInterval(pollTimer);
+ pollTimer=setInterval(function(){
+  if(writing) return;
+  loadSharedData().then(function(raw){
+   applyRemoteData(raw);
+  }).catch(function(){ /* ignore transient poll errors */ });
+ },4000);
+}
+
 function connectSharedDatabase(){
- if(!CONFIG_READY){
-  showLoadingError(
-   "Firebase is not configured yet. Open Firebase Console, create a Web app + Realtime Database (test mode), then paste firebaseConfig into FIREBASE_CONFIG in this file and push to GitHub."
-  );
-  return;
- }
-
- if(typeof firebase==="undefined"){
-  showLoadingError("Firebase SDK failed to load. Check your internet connection and refresh.");
-  return;
- }
-
- try{
-  firebase.initializeApp(FIREBASE_CONFIG);
- }catch(err){
-  showLoadingError("Firebase failed to start: "+(err&&err.message?err.message:String(err)));
-  return;
- }
-
- dbRef=firebase.database().ref(DB_PATH);
- let seeded=false;
-
- dbRef.on("value",function(snapshot){
-  const raw=snapshot.val();
-  if(raw==null){
-   if(seeded) return;
-   seeded=true;
-   writing=true;
-   const seed=makeDefaultData();
-   dbRef.set(JSON.parse(JSON.stringify(seed))).then(function(){
-    data=normaliseData(seed);
-    setTimeout(function(){ writing=false; },150);
-    if(!uiReady) startUi();
-   }).catch(function(err){
-    writing=false;
-    showLoadingError("Could not create the shared timetable: "+(err&&err.message?err.message:""));
+ loadSharedData().then(function(raw){
+  const normalised=normaliseData(raw);
+  const needsSeed=!raw||!Array.isArray(raw.classes)||raw.classes.length===0||!Array.isArray(raw.subjects)||raw.subjects.length===0;
+  data=normalised;
+  lastRemoteJson=JSON.stringify(normalised);
+  startUi();
+  startPolling();
+  if(needsSeed){
+   ensureWriteToken().then(function(ok){
+    if(!ok) return;
+    writing=true;
+    saveSharedData(normalised).then(function(){
+     setTimeout(function(){ writing=false; },200);
+    }).catch(function(){ writing=false; });
    });
-   return;
   }
-
-  applyRemoteData(raw);
-  if(!uiReady) startUi();
- },function(err){
-  showLoadingError("Could not load the shared timetable: "+(err&&err.message?err.message:""));
+ }).catch(function(err){
+  showLoadingError("Could not load the shared timetable: "+(err&&err.message?err.message:String(err)));
  });
 }
 

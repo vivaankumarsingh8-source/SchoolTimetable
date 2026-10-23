@@ -2,38 +2,22 @@
 
 Live site: https://vivaankumarsingh8-source.github.io/SchoolTimetable/
 
-Everyone with the link sees and edits the **same** timetable. Data is stored in Firebase Realtime Database (not in each browser).
+Everyone with the link sees and edits the **same** timetable. Data is stored in a public GitHub Gist (no Firebase / no Google account needed).
 
-## One-time Firebase setup
+## One-time setup (ask a parent — about 2 minutes)
 
-1. Go to [Firebase Console](https://console.firebase.google.com) and sign in with Google.
-2. Create a project (e.g. `SchoolTimetable`). Disable Google Analytics if you do not need it.
-3. Click the **Web** icon (`</>`) to add a web app. Register the app and copy the `firebaseConfig` object.
-4. In the left menu open **Build → Realtime Database → Create Database**.
-   - Pick a region close to you.
-   - Start in **test mode** (allows read/write for anyone with the link).
-5. Open `index.html` and `timetable.html` and replace the `FIREBASE_CONFIG` object with your config.  
-   Make sure `databaseURL` is included (Realtime Database → Data tab shows the URL, like `https://YOUR_PROJECT-default-rtdb.firebaseio.com`).
-6. Commit and push:
+GitHub already works on this project. Someone 13+ who can open the GitHub account should:
 
-```bash
-git add index.html timetable.html
-git commit -m "Add Firebase config for shared timetable"
-git push
-```
+1. Open: https://github.com/settings/tokens/new?scopes=gist&description=SchoolTimetable  
+2. Leave **only** the `gist` scope checked.  
+3. Click **Generate token** and copy it.  
+4. Open the live site (or this project locally). The first time you save, paste the token when asked.  
+   Or paste it into `GIST_TOKEN` in `index.html` and `timetable.html`, then commit and push so every visitor can save without the prompt.
 
-7. Open the live site and confirm edits appear in another browser or private window.
+The token can only update gists. It cannot change your main repositories if you only enable `gist`.
 
-## Notes
+## How sharing works
 
-- Anyone with the site link can change the data (by design).
-- Test-mode rules may expire after 30 days; in Realtime Database → Rules you can keep open access with:
-
-```json
-{
-  "rules": {
-    ".read": true,
-    ".write": true
-  }
-}
-```
+- The site loads shared JSON from the Gist.
+- Saves write back to that same Gist.
+- The page also checks for updates every few seconds, so other people’s changes appear live.
