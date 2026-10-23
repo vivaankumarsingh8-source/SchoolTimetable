@@ -47,6 +47,10 @@ th{background:#eaf0ff}
 .limits-grid{display:grid;grid-template-columns:repeat(5,minmax(85px,1fr));gap:9px;margin-top:12px}
 .limit-field label{font-size:13px}
 footer{text-align:center;color:#667085;padding:20px;font-size:13px}
+#loadingScreen{max-width:640px;margin:40px auto;padding:28px;background:white;border-radius:12px;box-shadow:0 3px 12px #0000000b;text-align:center}
+#loadingScreen .error{text-align:left;margin-top:16px}
+#appShell{display:none}
+#appShell.ready{display:block}
 @media(max-width:650px){
  .class-card,.subject-heading{grid-template-columns:1fr}
  .period-row{grid-template-columns:1fr;gap:8px}
@@ -55,6 +59,14 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 </style>
 </head>
 <body>
+
+<div id="loadingScreen">
+<h2>Loading shared timetable…</h2>
+<p class="muted">Connecting to the shared database so everyone sees the same data.</p>
+<div id="loadingMessage"></div>
+</div>
+
+<div id="appShell">
 
 <header>
 <h1>🏫 School Timetable Builder</h1>
@@ -160,8 +172,12 @@ even if the lessons are different subjects.
 
 </main>
 
-<footer>Your timetable is saved in this browser on this device.</footer>
+<footer>Shared live — everyone with this link sees the same timetable.</footer>
 
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
 <script>
 (function(){
 "use strict";
@@ -177,7 +193,19 @@ const PERIODS=[
  {number:6,start:"17:00",end:"18:30"}
 ];
 
-const STORAGE_KEY="schoolTimetableBuilderV7";
+// Paste your Firebase web app config here (Firebase console → Project settings).
+const FIREBASE_CONFIG={
+ apiKey:"PASTE_API_KEY",
+ authDomain:"PASTE_PROJECT_ID.firebaseapp.com",
+ databaseURL:"https://PASTE_PROJECT_ID-default-rtdb.firebaseio.com",
+ projectId:"PASTE_PROJECT_ID",
+ storageBucket:"PASTE_PROJECT_ID.appspot.com",
+ messagingSenderId:"PASTE_SENDER_ID",
+ appId:"PASTE_APP_ID"
+};
+
+const DB_PATH="timetable/shared";
+const CONFIG_READY=!String(FIREBASE_CONFIG.apiKey||"").startsWith("PASTE_");
 
 const HOUSES=["Ivrella","Emilora","Johansen","Caspiella","Everett"];
 
@@ -282,54 +310,6 @@ function makeDefaultData(){
  };
 }
 
-let data;
-try{
- data=JSON.parse(localStorage.getItem(STORAGE_KEY))||makeDefaultData();
-}catch(e){
- data=makeDefaultData();
-}
-
-if(!Array.isArray(data.classes)) data.classes=[];
-const defaultClasses=makeDefaultClasses();
-while(data.classes.length<50){
- const d=defaultClasses[data.classes.length];
- data.classes.push({name:d.name,year:d.year});
-}
-data.classes=data.classes.slice(0,50).map((c,i)=>{
- const fallback=defaultClasses[i];
- if(typeof c==="string") return {name:c,year:fallback.year};
- return {
-  name:c.name||fallback.name,
-  year:Math.min(10,Math.max(1,Number(c.year)||fallback.year))
- };
-});
-
-if(!Array.isArray(data.subjects)) data.subjects=[];
-if(!data.lessons||typeof data.lessons!=="object") data.lessons={};
-
-if(data.subjects.length===0){
- data.subjects=makeDefaultSubjects();
-}
-
-data.subjects=data.subjects.map(s=>({
- id:s.id||makeId(),
- name:s.name||"",
- teachers:Array.isArray(s.teachers)?s.teachers.map(t=>
-  typeof t==="string"?{id:makeId(),name:t}:{id:t.id||makeId(),name:t.name||""}
- ):[],
- limits:normaliseLimits(s.limits)
-}));
-
-// Discard any old-format lesson entries that cannot be safely converted.
-Object.keys(data.lessons).forEach(k=>{
- const l=data.lessons[k];
- if(typeof l==="string"){
-  delete data.lessons[k];
- }else if(!l||typeof l!=="object"){
-  delete data.lessons[k];
- }
-});
-
 function normaliseLimits(limits){
  const result={};
  for(let year=1;year<=10;year++){
@@ -339,12 +319,96 @@ function normaliseLimits(limits){
  return result;
 }
 
-function persist(){
- try{
-  localStorage.setItem(STORAGE_KEY,JSON.stringify(data));
- }catch(e){
-  alert("Your browser could not save the timetable. Check your browser storage settings.");
+function normaliseData(raw){
+ const next=raw&&typeof raw==="object"?{
+  classes:raw.classes,
+  subjects:raw.subjects,
+  lessons:raw.lessons
+ }:makeDefaultData();
+
+ if(!Array.isArray(next.classes)) next.classes=[];
+ const defaultClasses=makeDefaultClasses();
+ while(next.classes.length<50){
+  const d=defaultClasses[next.classes.length];
+  next.classes.push({name:d.name,year:d.year});
  }
+ next.classes=next.classes.slice(0,50).map((c,i)=>{
+  const fallback=defaultClasses[i];
+  if(typeof c==="string") return {name:c,year:fallback.year};
+  return {
+   name:c.name||fallback.name,
+   year:Math.min(10,Math.max(1,Number(c.year)||fallback.year))
+  };
+ });
+
+ if(!Array.isArray(next.subjects)) next.subjects=[];
+ if(!next.lessons||typeof next.lessons!=="object"||Array.isArray(next.lessons)) next.lessons={};
+
+ if(next.subjects.length===0){
+  next.subjects=makeDefaultSubjects();
+ }
+
+ next.subjects=next.subjects.map(s=>({
+  id:s.id||makeId(),
+  name:s.name||"",
+  teachers:Array.isArray(s.teachers)?s.teachers.map(t=>
+   typeof t==="string"?{id:makeId(),name:t}:{id:t.id||makeId(),name:t.name||""}
+  ):[],
+  limits:normaliseLimits(s.limits)
+ }));
+
+ Object.keys(next.lessons).forEach(k=>{
+  const l=next.lessons[k];
+  if(typeof l==="string"||!l||typeof l!=="object"){
+   delete next.lessons[k];
+  }
+ });
+
+ return next;
+}
+
+let data=makeDefaultData();
+let dbRef=null;
+let writing=false;
+let persistTimer=null;
+let uiReady=false;
+
+function showLoadingError(message){
+ const el=document.getElementById("loadingMessage");
+ el.innerHTML='<div class="warning error">'+esc(message)+"</div>";
+}
+
+function revealApp(){
+ document.getElementById("loadingScreen").style.display="none";
+ document.getElementById("appShell").classList.add("ready");
+}
+
+function refreshUiFromData(){
+ if(!uiReady) return;
+ renderClasses();
+ renderSubjects();
+ renderClassSelector();
+ renderEditor();
+}
+
+function applyRemoteData(raw){
+ if(writing) return;
+ data=normaliseData(raw);
+ refreshUiFromData();
+}
+
+function persist(){
+ if(!dbRef) return;
+ clearTimeout(persistTimer);
+ persistTimer=setTimeout(function(){
+  writing=true;
+  dbRef.set(JSON.parse(JSON.stringify(data))).then(function(){
+   setTimeout(function(){ writing=false; },150);
+  }).catch(function(err){
+   writing=false;
+   alert("Could not save the shared timetable. "+(err&&err.message?err.message:""));
+  });
+ },300);
 }
 
 function esc(value){
@@ -963,12 +1027,65 @@ function renderConflicts(){
 
 document.getElementById("checkConflicts").addEventListener("click",renderConflicts);
 
-// Start
-renderClasses();
-renderSubjects();
-renderClassSelector();
-renderEditor();
-renderConflicts();
+function startUi(){
+ uiReady=true;
+ revealApp();
+ renderClasses();
+ renderSubjects();
+ renderClassSelector();
+ renderEditor();
+ renderConflicts();
+}
+
+function connectSharedDatabase(){
+ if(!CONFIG_READY){
+  showLoadingError(
+   "Firebase is not configured yet. Open Firebase Console, create a Web app + Realtime Database (test mode), then paste firebaseConfig into FIREBASE_CONFIG in this file and push to GitHub."
+  );
+  return;
+ }
+
+ if(typeof firebase==="undefined"){
+  showLoadingError("Firebase SDK failed to load. Check your internet connection and refresh.");
+  return;
+ }
+
+ try{
+  firebase.initializeApp(FIREBASE_CONFIG);
+ }catch(err){
+  showLoadingError("Firebase failed to start: "+(err&&err.message?err.message:String(err)));
+  return;
+ }
+
+ dbRef=firebase.database().ref(DB_PATH);
+ let seeded=false;
+
+ dbRef.on("value",function(snapshot){
+  const raw=snapshot.val();
+  if(raw==null){
+   if(seeded) return;
+   seeded=true;
+   writing=true;
+   const seed=makeDefaultData();
+   dbRef.set(JSON.parse(JSON.stringify(seed))).then(function(){
+    data=normaliseData(seed);
+    setTimeout(function(){ writing=false; },150);
+    if(!uiReady) startUi();
+   }).catch(function(err){
+    writing=false;
+    showLoadingError("Could not create the shared timetable: "+(err&&err.message?err.message:""));
+   });
+   return;
+  }
+
+  applyRemoteData(raw);
+  if(!uiReady) startUi();
+ },function(err){
+  showLoadingError("Could not load the shared timetable: "+(err&&err.message?err.message:""));
+ });
+}
+
+connectSharedDatabase();
 
 })();
 </script>
