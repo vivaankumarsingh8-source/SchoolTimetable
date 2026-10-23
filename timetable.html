@@ -47,6 +47,9 @@ th{background:#eaf0ff}
 .limits-grid{display:grid;grid-template-columns:repeat(5,minmax(85px,1fr));gap:9px;margin-top:12px}
 .limit-field label{font-size:13px}
 footer{text-align:center;color:#667085;padding:20px;font-size:13px}
+#syncBar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;padding:10px 14px;background:#eef4ff;border-bottom:1px solid #d7e0f5;font-size:14px;color:#243d7d}
+#syncStatus{min-height:1.2em}
+#syncBar button{padding:7px 12px;font-size:13px}
 #loadingScreen{max-width:640px;margin:40px auto;padding:28px;background:white;border-radius:12px;box-shadow:0 3px 12px #0000000b;text-align:center}
 #loadingScreen .error{text-align:left;margin-top:16px}
 #appShell{display:none}
@@ -67,6 +70,11 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 </div>
 
 <div id="appShell">
+
+<div id="syncBar">
+<span id="syncStatus">Connecting to shared timetable…</span>
+<button type="button" id="refreshShared" class="secondary">Refresh now</button>
+</div>
 
 <header>
 <h1>🏫 School Timetable Builder</h1>
@@ -373,7 +381,14 @@ let writing=false;
 let persistTimer=null;
 let pollTimer=null;
 let uiReady=false;
-let lastRemoteJson="";
+let lastRemoteText="";
+let lastUpdatedAt="";
+let saveGeneration=0;
+
+function setSyncStatus(message){
+ const el=document.getElementById("syncStatus");
+ if(el) el.textContent=message;
+}
 
 function showLoadingError(message){
  const el=document.getElementById("loadingMessage");
@@ -393,24 +408,56 @@ function refreshUiFromData(){
  renderEditor();
 }
 
-function applyRemoteData(raw){
- if(writing) return;
- const normalised=normaliseData(raw);
- const asJson=JSON.stringify(normalised);
- if(asJson===lastRemoteJson) return;
- lastRemoteJson=asJson;
- data=normalised;
+function applyRemoteData(raw,meta){
+ if(writing) return false;
+ const remoteText=JSON.stringify(raw||{});
+ if(remoteText===lastRemoteText) return false;
+ lastRemoteText=remoteText;
+ if(meta&&meta.updatedAt) lastUpdatedAt=meta.updatedAt;
+ data=normaliseData(raw);
  refreshUiFromData();
+ setSyncStatus("Updated from shared timetable"+(lastUpdatedAt?" · "+new Date(lastUpdatedAt).toLocaleTimeString():""));
+ return true;
 }
 
-function gistRawUrl(){
- return "https://gist.githubusercontent.com/vivaankumarsingh8-source/"+GIST_ID+"/raw/"+GIST_FILE+"?ts="+Date.now();
+function authHeaders(){
+ const headers={
+  "Accept":"application/vnd.github+json"
+ };
+ const token=getWriteToken();
+ if(token) headers.Authorization="Bearer "+token;
+ return headers;
 }
 
+// Use the GitHub API (not the raw CDN URL). Raw gist URLs are often cached for minutes,
+// which made laptop-to-laptop sync look random.
 function loadSharedData(){
- return fetch(gistRawUrl(),{cache:"no-store"}).then(function(res){
-  if(!res.ok) throw new Error("HTTP "+res.status);
+ return fetch("https://api.github.com/gists/"+GIST_ID+"?ts="+Date.now(),{
+  cache:"no-store",
+  headers:authHeaders()
+ }).then(function(res){
+  if(!res.ok){
+   return res.json().catch(function(){ return {}; }).then(function(body){
+    throw new Error((body&&body.message)||("HTTP "+res.status));
+   });
+  }
   return res.json();
+ }).then(function(gist){
+  const file=gist.files&&gist.files[GIST_FILE];
+  if(!file||typeof file.content!=="string"){
+   throw new Error("Shared timetable file missing from Gist.");
+  }
+  let parsed;
+  try{
+   parsed=JSON.parse(file.content);
+  }catch(e){
+   throw new Error("Shared timetable JSON is invalid.");
+  }
+  return {
+   raw:parsed,
+   text:file.content,
+   updatedAt:gist.updated_at||""
+  };
  });
 }
 
@@ -421,8 +468,10 @@ function saveSharedData(payload){
    "Missing save token. Ask a parent to create a GitHub token with only the gist scope, then paste it when prompted."
   ));
  }
+ const content=JSON.stringify(payload);
  return fetch("https://api.github.com/gists/"+GIST_ID,{
   method:"PATCH",
+  cache:"no-store",
   headers:{
    "Accept":"application/vnd.github+json",
    "Authorization":"Bearer "+token,
@@ -430,7 +479,7 @@ function saveSharedData(payload){
   },
   body:JSON.stringify({
    files:{
-    "timetable.json":{content:JSON.stringify(payload)}
+    "timetable.json":{content:content}
    }
   })
  }).then(function(res){
@@ -439,17 +488,23 @@ function saveSharedData(payload){
     throw new Error((body&&body.message)||("HTTP "+res.status));
    });
   }
+  return res.json().then(function(gist){
+   return {
+    text:content,
+    updatedAt:gist.updated_at||""
+   };
+  });
  });
 }
 
 function ensureWriteToken(){
  if(getWriteToken()) return Promise.resolve(true);
  const entered=window.prompt(
-  "Ask a parent for help (one-time).\n\n"+
+  "Ask a parent for help (one-time on each laptop, or put the token in the code).\n\n"+
   "1. Open https://github.com/settings/tokens/new?scopes=gist&description=SchoolTimetable\n"+
   "2. Generate a token with ONLY the gist scope\n"+
   "3. Paste the token here\n\n"+
-  "This lets everyone with the site link share the same timetable."
+  "Both laptops need this token to save shared changes."
  );
  if(!entered||!entered.trim()) return Promise.resolve(false);
  try{
@@ -462,21 +517,49 @@ function persist(){
  clearTimeout(persistTimer);
  persistTimer=setTimeout(function(){
   const payload=JSON.parse(JSON.stringify(data));
+  const generation=++saveGeneration;
+  setSyncStatus("Saving shared timetable…");
   ensureWriteToken().then(function(ok){
    if(!ok){
-    alert("Could not save to the shared timetable because no GitHub gist token is set.");
+    setSyncStatus("Not saved — missing GitHub gist token on this laptop.");
+    alert("Could not save to the shared timetable because no GitHub gist token is set on this laptop.");
     return;
    }
    writing=true;
-   saveSharedData(payload).then(function(){
-    lastRemoteJson=JSON.stringify(payload);
-    setTimeout(function(){ writing=false; },200);
+   saveSharedData(payload).then(function(result){
+    if(generation!==saveGeneration) return;
+    lastRemoteText=result.text;
+    lastUpdatedAt=result.updatedAt||lastUpdatedAt;
+    setSyncStatus("Saved to shared timetable · "+new Date().toLocaleTimeString());
+    setTimeout(function(){
+     if(generation===saveGeneration) writing=false;
+    },500);
    }).catch(function(err){
+    if(generation!==saveGeneration) return;
     writing=false;
+    setSyncStatus("Save failed.");
     alert("Could not save the shared timetable. "+(err&&err.message?err.message:""));
    });
   });
- },300);
+ },400);
+}
+
+function pullSharedData(manual){
+ if(writing){
+  if(manual) setSyncStatus("Wait — a save is still in progress…");
+  return Promise.resolve(false);
+ }
+ if(manual) setSyncStatus("Refreshing…");
+ return loadSharedData().then(function(result){
+  const changed=applyRemoteData(result.raw,{updatedAt:result.updatedAt});
+  if(!changed){
+   setSyncStatus("Up to date"+(result.updatedAt?" · "+new Date(result.updatedAt).toLocaleTimeString():""));
+  }
+  return changed;
+ }).catch(function(err){
+  setSyncStatus("Refresh failed"+(err&&err.message?": "+err.message:""));
+  return false;
+ });
 }
 
 function esc(value){
@@ -1108,28 +1191,48 @@ function startUi(){
 function startPolling(){
  if(pollTimer) clearInterval(pollTimer);
  pollTimer=setInterval(function(){
-  if(writing) return;
-  loadSharedData().then(function(raw){
-   applyRemoteData(raw);
-  }).catch(function(){ /* ignore transient poll errors */ });
- },4000);
+  pullSharedData(false);
+ },2000);
+ document.addEventListener("visibilitychange",function(){
+  if(!document.hidden) pullSharedData(false);
+ });
+ window.addEventListener("focus",function(){
+  pullSharedData(false);
+ });
 }
 
 function connectSharedDatabase(){
- loadSharedData().then(function(raw){
+ setSyncStatus("Loading shared timetable…");
+ loadSharedData().then(function(result){
+  const raw=result.raw;
   const normalised=normaliseData(raw);
   const needsSeed=!raw||!Array.isArray(raw.classes)||raw.classes.length===0||!Array.isArray(raw.subjects)||raw.subjects.length===0;
   data=normalised;
-  lastRemoteJson=JSON.stringify(normalised);
+  lastRemoteText=result.text||JSON.stringify(raw||{});
+  lastUpdatedAt=result.updatedAt||"";
   startUi();
+  setSyncStatus(
+   (getWriteToken()?"Ready to sync":"Viewing shared data — paste gist token on this laptop to save")+
+   (lastUpdatedAt?" · "+new Date(lastUpdatedAt).toLocaleTimeString():"")
+  );
   startPolling();
+  document.getElementById("refreshShared").addEventListener("click",function(){
+   pullSharedData(true);
+  });
   if(needsSeed){
    ensureWriteToken().then(function(ok){
     if(!ok) return;
     writing=true;
-    saveSharedData(normalised).then(function(){
-     setTimeout(function(){ writing=false; },200);
-    }).catch(function(){ writing=false; });
+    setSyncStatus("Creating first shared timetable…");
+    saveSharedData(normalised).then(function(saved){
+     lastRemoteText=saved.text;
+     lastUpdatedAt=saved.updatedAt||lastUpdatedAt;
+     writing=false;
+     setSyncStatus("Shared timetable ready · "+new Date().toLocaleTimeString());
+    }).catch(function(err){
+     writing=false;
+     setSyncStatus("Could not create shared timetable"+(err&&err.message?": "+err.message:""));
+    });
    });
   }
  }).catch(function(err){
