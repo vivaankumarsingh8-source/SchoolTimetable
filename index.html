@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow, noarchive">
 <meta name="googlebot" content="noindex, nofollow, noarchive">
-<title>School Timetable Builder</title>
+<title>School Software</title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:Arial,sans-serif;background:#f1f5fb;color:#243047}
@@ -20,6 +20,11 @@ button.danger{background:#b42335}
 nav button{background:#e6ecfb;color:#243d7d}
 nav button.active{background:#304c9b;color:white}
 main{max-width:1600px;margin:22px auto;padding:0 14px}
+.student-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:14px}
+.student-chip{display:block;width:100%;text-align:left;background:#f8fafc;color:#243047;border:1px solid #dce2ec;border-radius:8px;padding:12px}
+.student-chip:hover,.student-chip.active{background:#e6ecfb;border-color:#304c9b;color:#243d7d}
+.student-chip small{display:block;color:#667085;margin-top:4px;font-weight:normal}
+.score-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:12px}
 .day-board{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}
 .day-board th,.day-board td{padding:6px;border:1px solid #dce2ec;vertical-align:top}
 .day-board th{background:#eaf0ff;font-size:12px;white-space:nowrap}
@@ -78,7 +83,7 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 <body>
 
 <div id="loadingScreen">
-<h2>Loading shared timetable…</h2>
+<h2>Loading school data…</h2>
 <p class="muted">Connecting to the shared database so everyone sees the same data.</p>
 <div id="loadingMessage"></div>
 </div>
@@ -86,31 +91,46 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 <div id="appShell">
 
 <div id="syncBar">
-<span id="syncStatus">Connecting to shared timetable…</span>
+<span id="syncStatus">Connecting to shared school data…</span>
 <button type="button" id="refreshShared" class="secondary">Refresh now</button>
 </div>
 
 <header>
-<h1>🏫 School Timetable Builder</h1>
-<p>47 classes · Years 1–7 by house · Years 8–10 by profile</p>
+<h1>🏫 School Software</h1>
+<p>Classes · Students & scores · Subjects · Timetable</p>
 </header>
 
 <nav>
 <button class="active" data-tab="classes">1. Classes</button>
-<button data-tab="subjects">2. Subjects & Teachers</button>
-<button data-tab="editor">3. Timetable</button>
+<button data-tab="students">2. Students</button>
+<button data-tab="subjects">3. Subjects & Teachers</button>
+<button data-tab="editor">4. Timetable</button>
 </nav>
 
 <main>
 
 <section id="classes" class="panel active">
 <h2>Classes and school years</h2>
-<p class="muted">Years 1–7 use house names (Ivrella, Emilora, Johansen, Caspiella, Everett). Years 8–10 use profile names: General Stuff, Spells, Hand Magic, and Important Magic.</p>
+<p class="muted">Years 1–7 use house names (Ivrella, Emilora, Johansen, Caspiella, Everett). Years 8–10 use profile names: General Stuff, Spells, Hand Magic, and Important Magic. Years 1–7 have 10 students each; each Years 8–10 year has two classes of 12 and two of 13.</p>
 <div id="classFields"></div>
 <div class="actions">
 <button id="saveClasses">Save classes</button>
 </div>
 <div id="classMessage"></div>
+</section>
+
+<section id="students" class="panel">
+<h2>Students and scores</h2>
+<p class="muted">Choose a class, then click a student to enter or edit their subject scores.</p>
+<div class="grid">
+<div>
+<label for="studentClassFilter">Class</label>
+<select id="studentClassFilter"></select>
+</div>
+</div>
+<div id="studentList" class="student-list"></div>
+<div id="studentDetail"></div>
+<div id="studentMessage"></div>
 </section>
 
 <section id="subjects" class="panel">
@@ -192,7 +212,7 @@ A teacher can only teach two classes at the same time if those classes are in th
 
 </main>
 
-<footer>Shared live — everyone with this link sees the same timetable.</footer>
+<footer>Shared live — everyone with this link sees the same school data.</footer>
 
 </div>
 
@@ -228,7 +248,7 @@ function getWriteToken(){
  }
 }
 
-const SCHEMA_VERSION=9;
+const SCHEMA_VERSION=10;
 const CLASS_COUNT=47;
 const LESSONS_PER_TEACHER=25;
 const HOUSES=["Ivrella","Emilora","Johansen","Caspiella","Everett"];
@@ -433,11 +453,130 @@ function syncSubjectTeacherCounts(subjects,classes,lessons){
  return subjects;
 }
 
+const STUDENT_FIRST_NAMES=[
+ "Noah","Olivia","Liam","Emma","Lucas","Amelia","Ethan","Harper","Mason","Ella",
+ "Logan","Scarlett","Benjamin","Grace","Henry","Chloe","Jack","Zoe","Samuel","Layla",
+ "Daniel","Nora","Matthew","Riley","David","Aria","Joseph","Penelope","Thomas","Luna",
+ "Charles","Hannah","Christopher","Addison","Andrew","Eleanor","Joshua","Willow","Ryan","Audrey",
+ "Nathan","Stella","Caleb","Naomi","Isaac","Claire","Aaron","Paisley","Hunter","Skylar",
+ "Connor","Violet","Christian","Savannah","Jonathan","Brooklyn","Aaron","Bella","Charles","Hazel"
+];
+const STUDENT_LAST_NAMES=[
+ "Smith","Jones","Brown","Taylor","Wilson","Davies","Evans","Thomas","Roberts","Johnson",
+ "Lewis","Walker","Robinson","Wood","Thompson","White","Watson","Jackson","Harris","Martin",
+ "Cooper","Anderson","Scott","Mitchell","Phillips","Campbell","Parker","Collins","Edwards","Stewart",
+ "Morris","Murphy","Cook","Rogers","Morgan","Bell","Bailey","Reed","Kelly","Howard",
+ "Ward","Cox","Richardson","Cox","Ward","Peterson","Gray","Ramirez","James","Watson"
+];
+
+function studentCapacityForClass(classObj,classIndex,classes){
+ if(Number(classObj.year)<=7) return 10;
+ const sameYear=classes
+  .map((c,i)=>({c,i}))
+  .filter(item=>Number(item.c.year)===Number(classObj.year))
+  .sort((a,b)=>{
+   const ai=PROFILES.findIndex(p=>p.name===a.c.profile);
+   const bi=PROFILES.findIndex(p=>p.name===b.c.profile);
+   return ai-bi;
+  });
+ const orderIndex=sameYear.findIndex(item=>item.i===classIndex);
+ return orderIndex>=0&&orderIndex<2?12:13;
+}
+
+function nextGeneratedStudentName(usedNames){
+ let n=0;
+ while(true){
+  const first=STUDENT_FIRST_NAMES[n%STUDENT_FIRST_NAMES.length];
+  const last=STUDENT_LAST_NAMES[Math.floor(n/STUDENT_FIRST_NAMES.length)%STUDENT_LAST_NAMES.length];
+  const suffix=n>=STUDENT_FIRST_NAMES.length*STUDENT_LAST_NAMES.length
+   ?(" "+(Math.floor(n/(STUDENT_FIRST_NAMES.length*STUDENT_LAST_NAMES.length))+1))
+   :"";
+  const name=first+" "+last+suffix;
+  if(!usedNames.has(name.toLowerCase())){
+   usedNames.add(name.toLowerCase());
+   return name;
+  }
+  n++;
+ }
+}
+
+function makeDefaultStudents(classes){
+ const usedNames=new Set();
+ const presetByClass={};
+ classes.forEach(c=>{presetByClass[c.name]=[];});
+
+ function reserve(name){
+  usedNames.add(name.toLowerCase());
+  return name;
+ }
+
+ function addPreset(className,name){
+  if(!presetByClass[className]) presetByClass[className]=[];
+  presetByClass[className].push(reserve(name));
+ }
+
+ addPreset("Ivrella 1","Lily Mclaren");
+ addPreset("Ivrella 1","Fleur Johnson");
+ addPreset("Ivrella 1","Sophia Graswood");
+ addPreset("Emilora 1","Emily Vespera");
+
+ const ivrellaUpper=[
+  "Ava Miller","Mia Tailer","James Moore","Adam Paster","Julian Walker",
+  "Owen Lopez","Milo Carter","Elena Evans","Alice Sterling","Leo Rossi"
+ ];
+ const ivrellaClasses=classes.filter(c=>c.name.indexOf("Ivrella ")===0&&Number(c.year)>=3);
+ ivrellaUpper.forEach((name,i)=>{
+  if(!ivrellaClasses.length) return;
+  addPreset(ivrellaClasses[i%ivrellaClasses.length].name,name);
+ });
+
+ const everettNames=["Linda Wilson","Joseph Harris","Lincoln Briggs"];
+ const everettClasses=classes.filter(c=>c.name.indexOf("Everett ")===0);
+ everettNames.forEach((name,i)=>{
+  if(!everettClasses.length) return;
+  addPreset(everettClasses[i%everettClasses.length].name,name);
+ });
+
+ const students=[];
+ classes.forEach((c,classIndex)=>{
+  const capacity=studentCapacityForClass(c,classIndex,classes);
+  const names=(presetByClass[c.name]||[]).slice();
+  while(names.length<capacity) names.push(nextGeneratedStudentName(usedNames));
+  names.slice(0,capacity).forEach(name=>{
+   students.push({id:makeId(),name,classIndex,scores:{}});
+  });
+ });
+ return students;
+}
+
+function normaliseStudent(s,classCount){
+ if(!s||typeof s!=="object") return null;
+ const classIndex=Number(s.classIndex);
+ if(!Number.isInteger(classIndex)||classIndex<0||classIndex>=classCount) return null;
+ const scores={};
+ if(s.scores&&typeof s.scores==="object"&&!Array.isArray(s.scores)){
+  Object.keys(s.scores).forEach(subjectId=>{
+   const raw=s.scores[subjectId];
+   if(raw===""||raw==null) return;
+   const n=Number(raw);
+   if(Number.isFinite(n)) scores[subjectId]=n;
+  });
+ }
+ return {
+  id:s.id||makeId(),
+  name:String(s.name||"").trim()||"Student",
+  classIndex,
+  scores
+ };
+}
+
 function makeDefaultData(){
+ const classes=makeDefaultClasses();
  return {
   schemaVersion:SCHEMA_VERSION,
-  classes:makeDefaultClasses(),
+  classes,
   subjects:makeDefaultSubjects(),
+  students:makeDefaultStudents(classes),
   lessons:{},
   exceptions:[]
  };
@@ -525,6 +664,7 @@ function normaliseData(raw){
   schemaVersion:SCHEMA_VERSION,
   classes:raw.classes,
   subjects:raw.subjects,
+  students:raw.students,
   lessons:raw.lessons,
   exceptions:raw.exceptions
  };
@@ -538,11 +678,15 @@ function normaliseData(raw){
  next.classes=next.classes.slice(0,CLASS_COUNT).map((c,i)=>normaliseClass(c,defaultClasses[i]));
 
  if(!Array.isArray(next.subjects)) next.subjects=[];
+ if(!Array.isArray(next.students)) next.students=[];
  if(!next.lessons||typeof next.lessons!=="object"||Array.isArray(next.lessons)) next.lessons={};
  if(!Array.isArray(next.exceptions)) next.exceptions=[];
 
  if(next.subjects.length===0){
   next.subjects=makeDefaultSubjects();
+ }
+ if(next.students.length===0){
+  next.students=makeDefaultStudents(next.classes);
  }
 
  next.subjects=next.subjects.map(s=>({
@@ -589,6 +733,10 @@ function normaliseData(raw){
 
  next.exceptions=next.exceptions.filter(e=>typeof e==="string"&&e.indexOf("|")>=0);
 
+ next.students=next.students
+  .map(s=>normaliseStudent(s,next.classes.length))
+  .filter(Boolean);
+
  return next;
 }
 
@@ -600,6 +748,7 @@ let uiReady=false;
 let lastRemoteText="";
 let lastUpdatedAt="";
 let saveGeneration=0;
+let selectedStudentId="";
 
 function setSyncStatus(message){
  const el=document.getElementById("syncStatus");
@@ -619,6 +768,7 @@ function revealApp(){
 function refreshUiFromData(){
  if(!uiReady) return;
  renderClasses();
+ renderStudents();
  renderSubjects();
  renderEditor();
 }
@@ -898,6 +1048,7 @@ document.querySelectorAll("nav button").forEach(button=>{
   document.getElementById(button.dataset.tab).classList.add("active");
   if(button.dataset.tab==="editor") renderEditor();
   if(button.dataset.tab==="subjects") renderSubjectLimitsOverview();
+  if(button.dataset.tab==="students") renderStudents();
  });
 });
 
@@ -934,8 +1085,119 @@ document.getElementById("saveClasses").addEventListener("click",()=>{
 
  persist();
  renderClasses();
+ renderStudents();
  renderEditor();
  showMessage("classMessage","Class names and school years saved.","success");
+});
+
+// Students and scores
+function studentById(id){
+ return (data.students||[]).find(s=>s.id===id);
+}
+
+function renderStudentClassFilter(){
+ const select=document.getElementById("studentClassFilter");
+ if(!select) return;
+ const previous=select.value;
+ select.innerHTML=data.classes.map((c,i)=>
+  '<option value="'+i+'">'+esc(c.name)+' (Year '+c.year+' · '+
+  (data.students||[]).filter(s=>s.classIndex===i).length+' students)</option>'
+ ).join("");
+ if(previous!==""&&Number(previous)<data.classes.length) select.value=previous;
+}
+
+function renderStudents(){
+ renderStudentClassFilter();
+ const filter=document.getElementById("studentClassFilter");
+ const classIndex=Number(filter&&filter.value||0);
+ const list=document.getElementById("studentList");
+ const detail=document.getElementById("studentDetail");
+ if(!list||!detail) return;
+
+ const students=(data.students||[])
+  .filter(s=>s.classIndex===classIndex)
+  .slice()
+  .sort((a,b)=>a.name.localeCompare(b.name));
+
+ if(!students.length){
+  list.innerHTML='<p class="empty">No students in this class.</p>';
+ }else{
+  list.innerHTML=students.map(s=>
+   '<button type="button" class="student-chip'+(s.id===selectedStudentId?" active":"")+
+   '" data-id="'+esc(s.id)+'">'+esc(s.name)+
+   '<small>'+(Object.keys(s.scores||{}).length?"Has scores":"No scores yet")+'</small></button>'
+  ).join("");
+ }
+
+ list.querySelectorAll(".student-chip").forEach(button=>{
+  button.addEventListener("click",()=>{
+   selectedStudentId=button.dataset.id;
+   renderStudents();
+  });
+ });
+
+ const selected=studentById(selectedStudentId);
+ if(!selected||selected.classIndex!==classIndex){
+  detail.innerHTML=students.length
+   ?'<p class="muted" style="margin-top:18px">Click a student to enter scores.</p>'
+   :"";
+  return;
+ }
+
+ const classObj=data.classes[selected.classIndex];
+ const scoreSubjects=data.subjects.filter(subject=>limitForClass(subject,classObj)>0);
+
+ detail.innerHTML=
+  '<div class="notice" style="margin-top:18px">'+
+   '<strong>'+esc(selected.name)+'</strong> · '+esc(classObj?classObj.name:"Unknown class")+
+   '<div class="score-grid" id="scoreFields"></div>'+
+   '<div class="actions"><button type="button" id="saveStudentScores">Save scores</button></div>'+
+  '</div>';
+
+ const scoreFields=document.getElementById("scoreFields");
+ if(!scoreSubjects.length){
+  scoreFields.innerHTML='<p class="empty">No subjects are assigned to this class yet.</p>';
+ }else{
+  scoreSubjects.forEach(subject=>{
+   const wrap=document.createElement("div");
+   const value=selected.scores&&selected.scores[subject.id]!=null?selected.scores[subject.id]:"";
+   wrap.innerHTML=
+    '<label for="score_'+esc(subject.id)+'">'+esc(subject.name)+'</label>'+
+    '<input id="score_'+esc(subject.id)+'" type="number" min="0" max="100" step="0.1" '+
+    'value="'+esc(value)+'" placeholder="0–100">';
+   scoreFields.appendChild(wrap);
+  });
+ }
+
+ const saveBtn=document.getElementById("saveStudentScores");
+ if(saveBtn){
+  saveBtn.addEventListener("click",()=>{
+   const student=studentById(selectedStudentId);
+   if(!student) return;
+   const nextScores={};
+   for(const subject of scoreSubjects){
+    const input=document.getElementById("score_"+subject.id);
+    if(!input) continue;
+    const raw=input.value.trim();
+    if(raw==="") continue;
+    const n=Number(raw);
+    if(!Number.isFinite(n)||n<0||n>100){
+     showMessage("studentMessage","Scores must be numbers from 0 to 100.","warning");
+     return;
+    }
+    nextScores[subject.id]=n;
+   }
+   student.scores=nextScores;
+   persist();
+   renderStudents();
+   showMessage("studentMessage","Scores saved for "+student.name+".","success");
+  });
+ }
+}
+
+document.getElementById("studentClassFilter").addEventListener("change",()=>{
+ selectedStudentId="";
+ renderStudents();
 });
 
 // Subjects, teacher lists and limits
@@ -1415,6 +1677,7 @@ function startUi(){
  uiReady=true;
  revealApp();
  renderClasses();
+ renderStudents();
  renderSubjects();
  renderEditor();
 }

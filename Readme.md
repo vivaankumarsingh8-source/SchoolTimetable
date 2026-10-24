@@ -1,8 +1,8 @@
-# School Timetable Builder
+# School Software
 
 Live site: https://vivaankumarsingh8-source.github.io/SchoolTimetable/
 
-Everyone with the link sees and edits the **same** timetable. Data is stored in a public GitHub Gist (no Firebase / no Google account needed).
+Everyone with the link sees and edits the **same** school data (classes, students & scores, subjects, timetable). Data is stored in a public GitHub Gist (no Firebase / no Google account needed).
 
 ## One-time setup (ask a parent — about 2 minutes)
 
