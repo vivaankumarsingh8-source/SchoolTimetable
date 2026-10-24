@@ -97,14 +97,16 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 
 <header>
 <h1>🏫 School Software</h1>
-<p>Classes · Students & scores · Subjects · Timetable</p>
+<p>Classes · Couples · Students · Discipline · Subjects · Timetable</p>
 </header>
 
 <nav>
 <button class="active" data-tab="classes">1. Classes</button>
-<button data-tab="students">2. Students</button>
-<button data-tab="subjects">3. Subjects & Teachers</button>
-<button data-tab="editor">4. Timetable</button>
+<button data-tab="couples">2. Couples</button>
+<button data-tab="students">3. Students</button>
+<button data-tab="discipline">4. Discipline</button>
+<button data-tab="subjects">5. Subjects & Teachers</button>
+<button data-tab="editor">6. Timetable</button>
 </nav>
 
 <main>
@@ -117,6 +119,26 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 <button id="saveClasses">Save classes</button>
 </div>
 <div id="classMessage"></div>
+</section>
+
+<section id="couples" class="panel">
+<h2>Couples</h2>
+<p class="muted">Register school couples here. Pick two students and save the pair.</p>
+<div class="grid">
+<div>
+<label for="coupleStudentA">Student 1</label>
+<select id="coupleStudentA"></select>
+</div>
+<div>
+<label for="coupleStudentB">Student 2</label>
+<select id="coupleStudentB"></select>
+</div>
+</div>
+<div class="actions">
+<button type="button" id="addCoupleBtn">Register couple</button>
+</div>
+<div id="coupleMessage"></div>
+<div id="coupleList"></div>
 </section>
 
 <section id="students" class="panel">
@@ -145,6 +167,34 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 <div id="studentDetail"></div>
 <div id="promotionPanel" style="display:none"></div>
 <div id="studentMessage"></div>
+</section>
+
+<section id="discipline" class="panel">
+<h2>Discipline</h2>
+<p class="muted">Teachers log detentions here: choose the student, the teacher, the reason, and the date.</p>
+<div class="grid">
+<div>
+<label for="detentionStudent">Student</label>
+<select id="detentionStudent"></select>
+</div>
+<div>
+<label for="detentionTeacher">Teacher</label>
+<select id="detentionTeacher"></select>
+</div>
+<div>
+<label for="detentionDate">Date</label>
+<input id="detentionDate" type="date">
+</div>
+</div>
+<div style="margin-top:12px">
+<label for="detentionReason">Reason</label>
+<input id="detentionReason" maxlength="200" placeholder="Why did they get detention?">
+</div>
+<div class="actions">
+<button type="button" id="addDetentionBtn">Add detention</button>
+</div>
+<div id="disciplineMessage"></div>
+<div id="detentionList"></div>
 </section>
 
 <section id="subjects" class="panel">
@@ -247,7 +297,7 @@ function getWriteToken(){
  }
 }
 
-const SCHEMA_VERSION=16;
+const SCHEMA_VERSION=17;
 const LOCAL_BACKUP_KEY="schoolTimetableLocalBackupV1";
 const PASS_AVERAGE=4;
 const GRADE_SCALE=[
@@ -819,8 +869,38 @@ function makeDefaultData(){
   subjects:makeDefaultSubjects(),
   students:makeDefaultStudents(classes),
   tests:[],
+  detentions:[],
+  couples:[],
   lessons:{},
   exceptions:[]
+ };
+}
+
+function normaliseDetention(d,studentIds){
+ if(!d||typeof d!=="object") return null;
+ const studentId=String(d.studentId||"");
+ if(!studentId||(studentIds&&!studentIds.has(studentId))) return null;
+ return {
+  id:d.id||makeId(),
+  studentId,
+  teacherName:String(d.teacherName||"").trim()||"Unknown teacher",
+  reason:String(d.reason||"").trim()||"No reason given",
+  date:String(d.date||"").trim()||new Date().toISOString().slice(0,10)
+ };
+}
+
+function normaliseCouple(c,studentIds){
+ if(!c||typeof c!=="object") return null;
+ const a=String(c.studentIdA||"");
+ const b=String(c.studentIdB||"");
+ if(!a||!b||a===b) return null;
+ if(studentIds&&(!studentIds.has(a)||!studentIds.has(b))) return null;
+ const [studentIdA,studentIdB]=a<b?[a,b]:[b,a];
+ return {
+  id:c.id||makeId(),
+  studentIdA,
+  studentIdB,
+  note:String(c.note||"").trim()
  };
 }
 
@@ -909,6 +989,8 @@ function normaliseData(raw){
   subjects:raw.subjects,
   students:raw.students,
   tests:raw.tests,
+  detentions:raw.detentions,
+  couples:raw.couples,
   lessons:raw.lessons,
   exceptions:raw.exceptions
  };
@@ -924,6 +1006,8 @@ function normaliseData(raw){
  if(!Array.isArray(next.subjects)) next.subjects=[];
  if(!Array.isArray(next.students)) next.students=[];
  if(!Array.isArray(next.tests)) next.tests=[];
+ if(!Array.isArray(next.detentions)) next.detentions=[];
+ if(!Array.isArray(next.couples)) next.couples=[];
  if(!next.lessons||typeof next.lessons!=="object"||Array.isArray(next.lessons)) next.lessons={};
  if(!Array.isArray(next.exceptions)) next.exceptions=[];
 
@@ -1003,6 +1087,18 @@ function normaliseData(raw){
   yearStudents.forEach((student,i)=>{student.house=houseSlots[i];});
  }
 
+ const studentIds=new Set(next.students.map(s=>s.id));
+ next.detentions=next.detentions.map(d=>normaliseDetention(d,studentIds)).filter(Boolean);
+ next.couples=next.couples.map(c=>normaliseCouple(c,studentIds)).filter(Boolean);
+ // Unique couple pairs only.
+ const seenCouples=new Set();
+ next.couples=next.couples.filter(c=>{
+  const key=c.studentIdA+"|"+c.studentIdB;
+  if(seenCouples.has(key)) return false;
+  seenCouples.add(key);
+  return true;
+ });
+
  return next;
 }
 
@@ -1060,7 +1156,9 @@ function revealApp(){
 function refreshUiFromData(){
  if(!uiReady) return;
  renderClasses();
+ renderCouples();
  renderStudents();
+ renderDiscipline();
  renderSubjects();
  renderEditor();
 }
@@ -1417,6 +1515,8 @@ document.querySelectorAll("nav button").forEach(button=>{
   if(button.dataset.tab==="editor") renderEditor();
   if(button.dataset.tab==="subjects") renderSubjectLimitsOverview();
   if(button.dataset.tab==="students") renderStudents();
+  if(button.dataset.tab==="couples") renderCouples();
+  if(button.dataset.tab==="discipline") renderDiscipline();
  });
 });
 
@@ -1453,9 +1553,203 @@ document.getElementById("saveClasses").addEventListener("click",()=>{
 
  persist();
  renderClasses();
+ renderCouples();
  renderStudents();
+ renderDiscipline();
  renderEditor();
  showMessage("classMessage","Class names and school years saved.","success");
+});
+
+// Couples
+function sortedStudentsForSelect(){
+ return (data.students||[]).slice().sort((a,b)=>{
+  const ca=data.classes[a.classIndex]?data.classes[a.classIndex].name:"";
+  const cb=data.classes[b.classIndex]?data.classes[b.classIndex].name:"";
+  return ca.localeCompare(cb)||a.name.localeCompare(b.name);
+ });
+}
+
+function studentOptionHtml(selectedId){
+ return sortedStudentsForSelect().map(s=>{
+  const c=data.classes[s.classIndex];
+  const label=formatStudentLabel(s)+(c?" · "+c.name:"");
+  return '<option value="'+esc(s.id)+'" '+(s.id===selectedId?"selected":"")+'>'+esc(label)+'</option>';
+ }).join("");
+}
+
+function renderCouples(){
+ const a=document.getElementById("coupleStudentA");
+ const b=document.getElementById("coupleStudentB");
+ const list=document.getElementById("coupleList");
+ if(!a||!b||!list) return;
+
+ const prevA=a.value;
+ const prevB=b.value;
+ a.innerHTML='<option value="">Choose student…</option>'+studentOptionHtml(prevA);
+ b.innerHTML='<option value="">Choose student…</option>'+studentOptionHtml(prevB);
+ if(prevA&&[...a.options].some(o=>o.value===prevA)) a.value=prevA;
+ if(prevB&&[...b.options].some(o=>o.value===prevB)) b.value=prevB;
+
+ const couples=(data.couples||[]).slice().sort((x,y)=>{
+  const sa=studentById(x.studentIdA);
+  const sb=studentById(y.studentIdA);
+  return (sa?sa.name:"").localeCompare(sb?sb.name:"");
+ });
+
+ if(!couples.length){
+  list.innerHTML='<p class="empty">No couples registered yet.</p>';
+  return;
+ }
+
+ list.innerHTML=
+  '<div class="table-wrap"><table><thead><tr><th>Student 1</th><th>Student 2</th><th></th></tr></thead><tbody>'+
+  couples.map(c=>{
+   const s1=studentById(c.studentIdA);
+   const s2=studentById(c.studentIdB);
+   return '<tr><td>'+esc(s1?formatStudentLabel(s1):"Unknown")+'</td><td>'+
+    esc(s2?formatStudentLabel(s2):"Unknown")+'</td><td>'+
+    '<button type="button" class="danger remove-couple" data-id="'+esc(c.id)+'">Remove</button></td></tr>';
+  }).join("")+
+  '</tbody></table></div>';
+
+ list.querySelectorAll(".remove-couple").forEach(btn=>{
+  btn.addEventListener("click",()=>{
+   data.couples=(data.couples||[]).filter(c=>c.id!==btn.dataset.id);
+   persist();
+   renderCouples();
+   showMessage("coupleMessage","Couple removed.","success");
+  });
+ });
+}
+
+document.getElementById("addCoupleBtn").addEventListener("click",()=>{
+ const idA=document.getElementById("coupleStudentA").value;
+ const idB=document.getElementById("coupleStudentB").value;
+ if(!idA||!idB){
+  showMessage("coupleMessage","Choose both students.","warning");
+  return;
+ }
+ if(idA===idB){
+  showMessage("coupleMessage","A couple needs two different students.","warning");
+  return;
+ }
+ if(!studentById(idA)||!studentById(idB)){
+  showMessage("coupleMessage","One of those students was not found.","warning");
+  return;
+ }
+ const pair=normaliseCouple({studentIdA:idA,studentIdB:idB},null);
+ const exists=(data.couples||[]).some(c=>
+  c.studentIdA===pair.studentIdA&&c.studentIdB===pair.studentIdB
+ );
+ if(exists){
+  showMessage("coupleMessage","That couple is already registered.","warning");
+  return;
+ }
+ if(!Array.isArray(data.couples)) data.couples=[];
+ data.couples.push(pair);
+ persist();
+ document.getElementById("coupleStudentA").value="";
+ document.getElementById("coupleStudentB").value="";
+ renderCouples();
+ showMessage("coupleMessage","Couple registered.","success");
+});
+
+// Discipline
+function allTeacherNames(){
+ const names=new Set();
+ (data.subjects||[]).forEach(s=>{
+  (s.teachers||[]).forEach(t=>{
+   const n=String(t.name||"").trim();
+   if(n) names.add(n);
+  });
+ });
+ return Array.from(names).sort((a,b)=>a.localeCompare(b));
+}
+
+function renderDiscipline(){
+ const studentSelect=document.getElementById("detentionStudent");
+ const teacherSelect=document.getElementById("detentionTeacher");
+ const dateInput=document.getElementById("detentionDate");
+ const list=document.getElementById("detentionList");
+ if(!studentSelect||!teacherSelect||!list) return;
+
+ const prevStudent=studentSelect.value;
+ const prevTeacher=teacherSelect.value;
+ studentSelect.innerHTML='<option value="">Choose student…</option>'+studentOptionHtml(prevStudent);
+ if(prevStudent&&[...studentSelect.options].some(o=>o.value===prevStudent)){
+  studentSelect.value=prevStudent;
+ }
+
+ const teachers=allTeacherNames();
+ teacherSelect.innerHTML='<option value="">Choose teacher…</option>'+
+  teachers.map(n=>'<option value="'+esc(n)+'" '+(n===prevTeacher?"selected":"")+'>'+esc(n)+'</option>').join("");
+ if(prevTeacher&&teachers.indexOf(prevTeacher)>=0) teacherSelect.value=prevTeacher;
+
+ if(dateInput&&!dateInput.value){
+  dateInput.value=new Date().toISOString().slice(0,10);
+ }
+
+ const detentions=(data.detentions||[]).slice().sort((a,b)=>{
+  return String(b.date).localeCompare(String(a.date))||String(a.reason).localeCompare(String(b.reason));
+ });
+
+ if(!detentions.length){
+  list.innerHTML='<p class="empty">No detentions logged yet.</p>';
+  return;
+ }
+
+ list.innerHTML=
+  '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Student</th><th>Teacher</th><th>Reason</th><th></th></tr></thead><tbody>'+
+  detentions.map(d=>{
+   const s=studentById(d.studentId);
+   return '<tr><td>'+esc(d.date)+'</td><td>'+esc(s?formatStudentLabel(s):"Unknown")+
+    '</td><td>'+esc(d.teacherName)+'</td><td>'+esc(d.reason)+'</td><td>'+
+    '<button type="button" class="danger remove-detention" data-id="'+esc(d.id)+'">Remove</button></td></tr>';
+  }).join("")+
+  '</tbody></table></div>';
+
+ list.querySelectorAll(".remove-detention").forEach(btn=>{
+  btn.addEventListener("click",()=>{
+   data.detentions=(data.detentions||[]).filter(d=>d.id!==btn.dataset.id);
+   persist();
+   renderDiscipline();
+   showMessage("disciplineMessage","Detention removed.","success");
+  });
+ });
+}
+
+document.getElementById("addDetentionBtn").addEventListener("click",()=>{
+ const studentId=document.getElementById("detentionStudent").value;
+ const teacherName=document.getElementById("detentionTeacher").value.trim();
+ const reason=document.getElementById("detentionReason").value.trim();
+ const date=document.getElementById("detentionDate").value.trim();
+ if(!studentId){
+  showMessage("disciplineMessage","Choose a student.","warning");
+  return;
+ }
+ if(!teacherName){
+  showMessage("disciplineMessage","Choose a teacher.","warning");
+  return;
+ }
+ if(!reason){
+  showMessage("disciplineMessage","Enter a reason.","warning");
+  return;
+ }
+ if(!date){
+  showMessage("disciplineMessage","Choose a date.","warning");
+  return;
+ }
+ if(!studentById(studentId)){
+  showMessage("disciplineMessage","That student was not found.","warning");
+  return;
+ }
+ const entry=normaliseDetention({studentId,teacherName,reason,date},null);
+ if(!Array.isArray(data.detentions)) data.detentions=[];
+ data.detentions.push(entry);
+ persist();
+ document.getElementById("detentionReason").value="";
+ renderDiscipline();
+ showMessage("disciplineMessage","Detention logged.","success");
 });
 
 // Students and scores
@@ -2596,7 +2890,9 @@ function startUi(){
  uiReady=true;
  revealApp();
  renderClasses();
+ renderCouples();
  renderStudents();
+ renderDiscipline();
  renderSubjects();
  renderEditor();
 }
