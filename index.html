@@ -121,15 +121,19 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 
 <section id="students" class="panel">
 <h2>Students and scores</h2>
-<p class="muted">Choose a class, then click a student to enter or edit their subject scores.</p>
+<p class="muted">Choose a class, then click a student to enter or edit their subject scores. Every student has a unique name and unique surname.</p>
 <div class="grid">
 <div>
 <label for="studentClassFilter">Class</label>
 <select id="studentClassFilter"></select>
 </div>
 </div>
+<div class="actions">
+<button type="button" id="moveToNextClass">Move to next class</button>
+</div>
 <div id="studentList" class="student-list"></div>
 <div id="studentDetail"></div>
+<div id="promotionPanel" style="display:none"></div>
 <div id="studentMessage"></div>
 </section>
 
@@ -248,7 +252,7 @@ function getWriteToken(){
  }
 }
 
-const SCHEMA_VERSION=10;
+const SCHEMA_VERSION=11;
 const CLASS_COUNT=47;
 const LESSONS_PER_TEACHER=25;
 const HOUSES=["Ivrella","Emilora","Johansen","Caspiella","Everett"];
@@ -459,15 +463,56 @@ const STUDENT_FIRST_NAMES=[
  "Daniel","Nora","Matthew","Riley","David","Aria","Joseph","Penelope","Thomas","Luna",
  "Charles","Hannah","Christopher","Addison","Andrew","Eleanor","Joshua","Willow","Ryan","Audrey",
  "Nathan","Stella","Caleb","Naomi","Isaac","Claire","Aaron","Paisley","Hunter","Skylar",
- "Connor","Violet","Christian","Savannah","Jonathan","Brooklyn","Aaron","Bella","Charles","Hazel"
+ "Connor","Violet","Christian","Savannah","Jonathan","Brooklyn","Gabriel","Bella","Julian","Hazel",
+ "Lily","Fleur","Sophia","Emily","Ava","Mia","James","Adam","Owen","Milo",
+ "Elena","Alice","Leo","Linda","Lincoln","Ruby","Ivy","Felix","Clara","Hugo",
+ "Nina","Theo","Iris","Oscar","Freya","Arthur","Maya","Levi","Sofia","Jasper",
+ "Eliza","Miles","Autumn","Roman","Sienna","Elliot","Pearl","Victor","Daisy","Cora"
 ];
-const STUDENT_LAST_NAMES=[
- "Smith","Jones","Brown","Taylor","Wilson","Davies","Evans","Thomas","Roberts","Johnson",
- "Lewis","Walker","Robinson","Wood","Thompson","White","Watson","Jackson","Harris","Martin",
- "Cooper","Anderson","Scott","Mitchell","Phillips","Campbell","Parker","Collins","Edwards","Stewart",
- "Morris","Murphy","Cook","Rogers","Morgan","Bell","Bailey","Reed","Kelly","Howard",
- "Ward","Cox","Richardson","Cox","Ward","Peterson","Gray","Ramirez","James","Watson"
-];
+
+function buildSurnamePool(){
+ const reserved=[
+  "Mclaren","Johnson","Graswood","Vespera","Miller","Tailer","Moore","Paster","Walker",
+  "Lopez","Carter","Evans","Sterling","Rossi","Wilson","Harris","Briggs"
+ ];
+ const base=[
+  "Smith","Jones","Brown","Taylor","Davies","Thomas","Roberts","Lewis","Robinson","Wood",
+  "Thompson","White","Watson","Jackson","Martin","Cooper","Anderson","Scott","Mitchell","Phillips",
+  "Campbell","Parker","Collins","Edwards","Stewart","Morris","Murphy","Cook","Rogers","Morgan",
+  "Bell","Bailey","Reed","Kelly","Howard","Richardson","Peterson","Gray","Ramirez","James",
+  "Bennett","Hughes","Price","Saunders","Powell","Jenkins","Perry","Powell","Butler","Barnes",
+  "Fisher","Henderson","Coleman","Jenkins","West","Simmons","Foster","Gonzalez","Bryant","Alexander"
+ ];
+ const prefixes=[
+  "Ash","Black","Bright","Cold","Dark","East","Fair","Gold","Green","High","Iron","Lake","Moss",
+  "North","Oak","Pine","Red","River","Silver","Stone","Storm","Swift","Thorn","West","White","Wild",
+  "Winter","Wolf","Young","Amber","Blue","Coral","Dawn","Ember","Fern","Frost","Glen","Hawk","Ivory",
+  "Jade","Keen","Lark","Maple","Night","Olive","Pearl","Quinn","Rain","Sage","Tide","Umber","Vale"
+ ];
+ const suffixes=[
+  "wood","field","brook","worth","ley","man","ford","ton","ham","ridge","well","stone","crest",
+  "haven","moor","dale","wick","shaw","burn","cliff","mere","gate","hurst","croft","vale","view"
+ ];
+ const pool=new Set(reserved.concat(base));
+ prefixes.forEach(prefix=>{
+  suffixes.forEach(suffix=>{
+   pool.add(prefix+suffix);
+  });
+ });
+ let extra=1;
+ while(pool.size<650){
+  pool.add("Surname"+extra);
+  extra++;
+ }
+ return Array.from(pool);
+}
+
+const STUDENT_SURNAME_POOL=buildSurnamePool();
+
+function studentSurname(fullName){
+ const parts=String(fullName||"").trim().split(/\s+/);
+ return parts.length?parts[parts.length-1]:"";
+}
 
 function studentCapacityForClass(classObj,classIndex,classes){
  if(Number(classObj.year)<=7) return 10;
@@ -483,31 +528,54 @@ function studentCapacityForClass(classObj,classIndex,classes){
  return orderIndex>=0&&orderIndex<2?12:13;
 }
 
-function nextGeneratedStudentName(usedNames){
- let n=0;
- while(true){
-  const first=STUDENT_FIRST_NAMES[n%STUDENT_FIRST_NAMES.length];
-  const last=STUDENT_LAST_NAMES[Math.floor(n/STUDENT_FIRST_NAMES.length)%STUDENT_LAST_NAMES.length];
-  const suffix=n>=STUDENT_FIRST_NAMES.length*STUDENT_LAST_NAMES.length
-   ?(" "+(Math.floor(n/(STUDENT_FIRST_NAMES.length*STUDENT_LAST_NAMES.length))+1))
-   :"";
-  const name=first+" "+last+suffix;
-  if(!usedNames.has(name.toLowerCase())){
-   usedNames.add(name.toLowerCase());
-   return name;
+function shuffleInPlace(list){
+ for(let i=list.length-1;i>0;i--){
+  const j=Math.floor(Math.random()* (i+1));
+  const tmp=list[i];
+  list[i]=list[j];
+  list[j]=tmp;
+ }
+ return list;
+}
+
+function nextGeneratedStudentName(usedFullNames,usedSurnames,surnameQueue){
+ while(surnameQueue.length){
+  const last=surnameQueue.shift();
+  if(usedSurnames.has(last.toLowerCase())) continue;
+  for(let i=0;i<STUDENT_FIRST_NAMES.length;i++){
+   const first=STUDENT_FIRST_NAMES[i];
+   const full=first+" "+last;
+   if(usedFullNames.has(full.toLowerCase())) continue;
+   usedFullNames.add(full.toLowerCase());
+   usedSurnames.add(last.toLowerCase());
+   return full;
   }
+ }
+ let n=1;
+ while(true){
+  const last="Newname"+n;
+  const full="Student "+last;
   n++;
+  if(usedFullNames.has(full.toLowerCase())||usedSurnames.has(last.toLowerCase())) continue;
+  usedFullNames.add(full.toLowerCase());
+  usedSurnames.add(last.toLowerCase());
+  return full;
  }
 }
 
 function makeDefaultStudents(classes){
- const usedNames=new Set();
+ const usedFullNames=new Set();
+ const usedSurnames=new Set();
+ const surnameQueue=shuffleInPlace(STUDENT_SURNAME_POOL.slice());
  const presetByClass={};
  classes.forEach(c=>{presetByClass[c.name]=[];});
 
  function reserve(name){
-  usedNames.add(name.toLowerCase());
-  return name;
+  const full=String(name).trim();
+  const last=studentSurname(full);
+  usedFullNames.add(full.toLowerCase());
+  if(last) usedSurnames.add(last.toLowerCase());
+  return full;
  }
 
  function addPreset(className,name){
@@ -541,12 +609,31 @@ function makeDefaultStudents(classes){
  classes.forEach((c,classIndex)=>{
   const capacity=studentCapacityForClass(c,classIndex,classes);
   const names=(presetByClass[c.name]||[]).slice();
-  while(names.length<capacity) names.push(nextGeneratedStudentName(usedNames));
+  while(names.length<capacity){
+   names.push(nextGeneratedStudentName(usedFullNames,usedSurnames,surnameQueue));
+  }
   names.slice(0,capacity).forEach(name=>{
    students.push({id:makeId(),name,classIndex,scores:{}});
   });
  });
  return students;
+}
+
+function classIndexByName(classes,name){
+ return classes.findIndex(c=>c.name===name);
+}
+
+function year8ClassOptions(classes){
+ return PROFILES.map(profile=>{
+  const name=profile.name+" 8";
+  const index=classIndexByName(classes,name);
+  return {
+   profile:profile.name,
+   name,
+   index,
+   capacity:index>=0?studentCapacityForClass(classes[index],index,classes):0
+  };
+ }).filter(item=>item.index>=0);
 }
 
 function normaliseStudent(s,classCount){
@@ -1198,6 +1285,194 @@ function renderStudents(){
 document.getElementById("studentClassFilter").addEventListener("change",()=>{
  selectedStudentId="";
  renderStudents();
+});
+
+function hidePromotionPanel(){
+ const panel=document.getElementById("promotionPanel");
+ if(panel){
+  panel.style.display="none";
+  panel.innerHTML="";
+ }
+}
+
+function createYear1Students(classes,existingStudents){
+ const usedFullNames=new Set(existingStudents.map(s=>String(s.name||"").toLowerCase()));
+ const usedSurnames=new Set(existingStudents.map(s=>studentSurname(s.name).toLowerCase()).filter(Boolean));
+ const surnameQueue=shuffleInPlace(
+  STUDENT_SURNAME_POOL.filter(s=>!usedSurnames.has(s.toLowerCase()))
+ );
+ const created=[];
+ HOUSES.forEach(house=>{
+  const className=house+" 1";
+  const classIndex=classIndexByName(classes,className);
+  if(classIndex<0) return;
+  for(let i=0;i<10;i++){
+   created.push({
+    id:makeId(),
+    name:nextGeneratedStudentName(usedFullNames,usedSurnames,surnameQueue),
+    classIndex,
+    scores:{}
+   });
+  }
+ });
+ return created;
+}
+
+function applyPromotion(year7Assignments){
+ const classes=data.classes;
+ const nextStudents=[];
+
+ // Year 10 graduate out.
+ // Year 9 -> 10 same profile, Year 8 -> 9 same profile.
+ [9,8].forEach(fromYear=>{
+  const toYear=fromYear+1;
+  data.students.forEach(student=>{
+   const current=classes[student.classIndex];
+   if(!current||Number(current.year)!==fromYear||!current.profile) return;
+   const destName=current.profile+" "+toYear;
+   const destIndex=classIndexByName(classes,destName);
+   if(destIndex<0) return;
+   nextStudents.push({
+    id:student.id,
+    name:student.name,
+    classIndex:destIndex,
+    scores:student.scores&&typeof student.scores==="object"?Object.assign({},student.scores):{}
+   });
+  });
+ });
+
+ // Year 7 -> assigned Year 8 profiles.
+ (year7Assignments||[]).forEach(item=>{
+  const student=data.students.find(s=>s.id===item.studentId);
+  if(!student) return;
+  nextStudents.push({
+   id:student.id,
+   name:student.name,
+   classIndex:item.classIndex,
+   scores:student.scores&&typeof student.scores==="object"?Object.assign({},student.scores):{}
+  });
+ });
+
+ // House years 1-6 -> next house year.
+ for(let year=6;year>=1;year--){
+  HOUSES.forEach(house=>{
+   const fromName=house+" "+year;
+   const toName=house+" "+(year+1);
+   const fromIndex=classIndexByName(classes,fromName);
+   const toIndex=classIndexByName(classes,toName);
+   if(fromIndex<0||toIndex<0) return;
+   data.students.forEach(student=>{
+    if(student.classIndex!==fromIndex) return;
+    nextStudents.push({
+     id:student.id,
+     name:student.name,
+     classIndex:toIndex,
+     scores:student.scores&&typeof student.scores==="object"?Object.assign({},student.scores):{}
+    });
+   });
+  });
+ }
+
+ // Fresh Year 1 intake.
+ createYear1Students(classes,nextStudents).forEach(s=>nextStudents.push(s));
+
+ data.students=nextStudents;
+ selectedStudentId="";
+ hidePromotionPanel();
+ persist();
+ renderStudents();
+ showMessage("studentMessage","All students moved up a class. New Year 1 students were added.","success");
+}
+
+function renderYear7PromotionPanel(year7Students){
+ const panel=document.getElementById("promotionPanel");
+ const options=year8ClassOptions(data.classes);
+ panel.style.display="block";
+ panel.innerHTML=
+  '<div class="notice" style="margin-top:18px">'+
+   '<h3 style="margin-top:0">Assign Year 7 students to Year 8 profiles</h3>'+
+   '<p class="muted">Choose where each Year 7 student goes. Capacities: '+
+   options.map(o=>esc(o.name)+" ("+o.capacity+")").join(", ")+
+   ". Total Year 7 students: "+year7Students.length+".</p>"+
+   '<div class="table-wrap"><table><thead><tr><th>Student</th><th>Current class</th><th>Year 8 destination</th></tr></thead><tbody>'+
+   year7Students.map(s=>{
+    const current=data.classes[s.classIndex];
+    return '<tr><td>'+esc(s.name)+'</td><td>'+esc(current?current.name:"")+'</td><td>'+
+     '<select class="year8-assign" data-id="'+esc(s.id)+'">'+
+     '<option value="">— Choose profile class —</option>'+
+     options.map(o=>'<option value="'+o.index+'">'+esc(o.name)+' (max '+o.capacity+')</option>').join("")+
+     '</select></td></tr>';
+   }).join("")+
+   '</tbody></table></div>'+
+   '<div class="actions" style="margin-top:12px">'+
+    '<button type="button" id="confirmPromotion">Confirm move to next class</button>'+
+    '<button type="button" id="cancelPromotion" class="secondary">Cancel</button>'+
+   '</div>'+
+  '</div>';
+
+ document.getElementById("cancelPromotion").addEventListener("click",()=>{
+  hidePromotionPanel();
+  showMessage("studentMessage","Promotion cancelled.","warning");
+ });
+
+ document.getElementById("confirmPromotion").addEventListener("click",()=>{
+  const assignments=[];
+  const counts={};
+  options.forEach(o=>{counts[o.index]=0;});
+
+  for(const student of year7Students){
+   const select=panel.querySelector('.year8-assign[data-id="'+student.id+'"]');
+   const classIndex=Number(select&&select.value);
+   if(!select||select.value===""||!Number.isInteger(classIndex)){
+    showMessage("studentMessage","Assign every Year 7 student to a Year 8 class.","warning");
+    return;
+   }
+   counts[classIndex]=(counts[classIndex]||0)+1;
+   assignments.push({studentId:student.id,classIndex});
+  }
+
+  for(const option of options){
+   if((counts[option.index]||0)>option.capacity){
+    showMessage(
+     "studentMessage",
+     option.name+" can only take "+option.capacity+" students, but "+(counts[option.index]||0)+" were assigned.",
+     "warning"
+    );
+    return;
+   }
+  }
+
+  const totalCapacity=options.reduce((sum,o)=>sum+o.capacity,0);
+  if(year7Students.length>totalCapacity){
+   showMessage("studentMessage","Too many Year 7 students for Year 8 capacity.","warning");
+   return;
+  }
+  for(const option of options){
+   // Fill exactly? User may underfill some classes - allow underfill but all students must be placed.
+  }
+
+  applyPromotion(assignments);
+ });
+}
+
+document.getElementById("moveToNextClass").addEventListener("click",()=>{
+ const year7Students=data.students
+  .filter(s=>{
+   const c=data.classes[s.classIndex];
+   return c&&Number(c.year)===7;
+  })
+  .slice()
+  .sort((a,b)=>a.name.localeCompare(b.name));
+
+ if(year7Students.length){
+  if(!confirm("Year 7 students must be assigned to Year 8 profiles before everyone else moves up. Continue?")) return;
+  renderYear7PromotionPanel(year7Students);
+  showMessage("studentMessage","Assign each Year 7 student to a Year 8 class, then confirm.","warning");
+  return;
+ }
+
+ if(!confirm("Move every student up one class? Year 10 students will leave, and new Year 1 students will join.")) return;
+ applyPromotion([]);
 });
 
 // Subjects, teacher lists and limits
