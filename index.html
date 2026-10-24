@@ -245,7 +245,7 @@ function getWriteToken(){
  }
 }
 
-const SCHEMA_VERSION=14;
+const SCHEMA_VERSION=15;
 const PASS_AVERAGE=4;
 const GRADE_SCALE=[
  {value:1,label:"Dreadful"},
@@ -895,7 +895,8 @@ function normaliseClass(c,fallback){
 }
 
 function normaliseData(raw){
- if(!raw||typeof raw!=="object"||Number(raw.schemaVersion)!==SCHEMA_VERSION){
+ // Never wipe existing school data on version bumps — only create defaults when empty.
+ if(!raw||typeof raw!=="object"){
   return makeDefaultData();
  }
 
@@ -2429,7 +2430,10 @@ function connectSharedDatabase(){
  loadSharedData().then(function(result){
   const raw=result.raw;
   const normalised=normaliseData(raw);
-  const needsSeed=!raw||!Array.isArray(raw.classes)||raw.classes.length===0||!Array.isArray(raw.subjects)||raw.subjects.length===0||Number(raw.schemaVersion)!==SCHEMA_VERSION;
+  const emptySchool=!raw||!Array.isArray(raw.classes)||raw.classes.length===0||!Array.isArray(raw.subjects)||raw.subjects.length===0;
+  const schemaChanged=Number(raw&&raw.schemaVersion)!==SCHEMA_VERSION;
+  // Save after first setup, or after a version bump that migrated data in place (no wipe).
+  const needsSeed=emptySchool||schemaChanged;
   data=normalised;
   lastRemoteText=result.text||JSON.stringify(raw||{});
   lastUpdatedAt=result.updatedAt||"";
@@ -2446,16 +2450,16 @@ function connectSharedDatabase(){
    ensureWriteToken().then(function(ok){
     if(!ok) return;
     writing=true;
-    setSyncStatus(Number(raw&&raw.schemaVersion)!==SCHEMA_VERSION?"Updating shared timetable to the new class/profile layout…":"Creating first shared timetable…");
+    setSyncStatus(emptySchool?"Creating first shared school data…":"Saving updated app version (your data is kept)…");
     saveSharedData(normalised).then(function(saved){
      lastRemoteText=saved.text;
      lastUpdatedAt=saved.updatedAt||lastUpdatedAt;
      writing=false;
-     setSyncStatus("Shared timetable ready · "+new Date().toLocaleTimeString());
+     setSyncStatus("Shared school data ready · "+new Date().toLocaleTimeString());
      refreshUiFromData();
     }).catch(function(err){
      writing=false;
-     setSyncStatus("Could not create shared timetable"+(err&&err.message?": "+err.message:""));
+     setSyncStatus("Could not save shared school data"+(err&&err.message?": "+err.message:""));
     });
    });
   }
