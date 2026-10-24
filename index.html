@@ -1968,6 +1968,8 @@ function applyPromotion(year7Assignments){
 }
 
 function renderYear7PromotionPanel(year7Students){
+ hideAddTestPanel();
+ hideDeleteTestPanel();
  const panel=document.getElementById("promotionPanel");
  const options=year8ClassOptions(data.classes);
  panel.style.display="block";
