@@ -134,10 +134,12 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 </div>
 <div class="actions">
 <button type="button" id="addTestBtn">Add test</button>
+<button type="button" id="deleteTestBtn" class="danger">Delete test</button>
 <button type="button" id="moveToNextClass">Move to next class</button>
 </div>
 <div id="studentSearchResults"></div>
 <div id="addTestPanel" style="display:none"></div>
+<div id="deleteTestPanel" style="display:none"></div>
 <div id="averagesBoard"></div>
 <div id="studentList" class="student-list"></div>
 <div id="studentDetail"></div>
@@ -1498,9 +1500,81 @@ function hideAddTestPanel(){
  }
 }
 
+function hideDeleteTestPanel(){
+ const panel=document.getElementById("deleteTestPanel");
+ if(panel){
+  panel.style.display="none";
+  panel.innerHTML="";
+ }
+}
+
+function deleteTestById(testId){
+ if(!testId) return false;
+ data.tests=(data.tests||[]).filter(t=>t.id!==testId);
+ (data.students||[]).forEach(student=>{
+  if(student.scores&&Object.prototype.hasOwnProperty.call(student.scores,testId)){
+   delete student.scores[testId];
+  }
+ });
+ return true;
+}
+
+function renderDeleteTestPanel(){
+ const panel=document.getElementById("deleteTestPanel");
+ if(!panel) return;
+ hideAddTestPanel();
+ hidePromotionPanel();
+ const tests=(data.tests||[]).slice().sort((a,b)=>{
+  if(Number(a.year)!==Number(b.year)) return Number(a.year)-Number(b.year);
+  return String(a.title||"").localeCompare(String(b.title||""));
+ });
+
+ panel.style.display="block";
+ if(!tests.length){
+  panel.innerHTML=
+   '<div class="notice" style="margin-top:14px">'+
+    '<h3 style="margin-top:0">Delete test</h3>'+
+    '<p class="empty">No tests to delete.</p>'+
+    '<div class="actions"><button type="button" id="closeDeleteTest" class="secondary">Close</button></div>'+
+   '</div>';
+  document.getElementById("closeDeleteTest").addEventListener("click",hideDeleteTestPanel);
+  return;
+ }
+
+ panel.innerHTML=
+  '<div class="notice" style="margin-top:14px">'+
+   '<h3 style="margin-top:0">Delete test</h3>'+
+   '<p class="muted">Deleting a test also removes every student’s score for that test.</p>'+
+   '<div class="table-wrap"><table><thead><tr><th>Test</th><th>Subject</th><th>Year</th><th></th></tr></thead><tbody>'+
+   tests.map(t=>{
+    const subject=subjectById(t.subjectId);
+    return '<tr><td>'+esc(t.title)+'</td><td>'+esc(subject?subject.name:"")+'</td><td>Year '+
+     esc(t.year)+'</td><td><button type="button" class="danger delete-one-test" data-id="'+
+     esc(t.id)+'">Delete</button></td></tr>';
+   }).join("")+
+   '</tbody></table></div>'+
+   '<div class="actions"><button type="button" id="closeDeleteTest" class="secondary">Close</button></div>'+
+  '</div>';
+
+ document.getElementById("closeDeleteTest").addEventListener("click",hideDeleteTestPanel);
+ panel.querySelectorAll(".delete-one-test").forEach(button=>{
+  button.addEventListener("click",()=>{
+   const test=testById(button.dataset.id);
+   if(!test) return;
+   if(!confirm('Delete test “'+test.title+'” for Year '+test.year+'? All scores for it will be removed.')) return;
+   deleteTestById(test.id);
+   persist(true);
+   renderDeleteTestPanel();
+   renderStudents();
+   showMessage("studentMessage",'Deleted test “'+test.title+'”.',"success");
+  });
+ });
+}
+
 function renderAddTestPanel(){
  const panel=document.getElementById("addTestPanel");
  if(!panel) return;
+ hideDeleteTestPanel();
  hidePromotionPanel();
  panel.style.display="block";
  panel.innerHTML=
@@ -1776,7 +1850,14 @@ document.getElementById("studentSearch").addEventListener("input",()=>{
 
 document.getElementById("addTestBtn").addEventListener("click",()=>{
  showMessage("studentMessage","","");
+ hideDeleteTestPanel();
  renderAddTestPanel();
+});
+
+document.getElementById("deleteTestBtn").addEventListener("click",()=>{
+ showMessage("studentMessage","","");
+ hideAddTestPanel();
+ renderDeleteTestPanel();
 });
 
 function hidePromotionPanel(){
