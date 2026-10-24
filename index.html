@@ -93,7 +93,6 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 <button class="active" data-tab="classes">1. Classes</button>
 <button data-tab="subjects">2. Subjects & Teachers</button>
 <button data-tab="editor">3. Timetable</button>
-<button data-tab="conflicts">4. Teacher Conflicts</button>
 </nav>
 
 <main>
@@ -128,7 +127,7 @@ Every Years 1–5 class can have up to 3 Potions lessons per week, while General
 <button id="saveSubjects">Save subjects, teachers and limits</button>
 </div>
 <div id="subjectMessage"></div>
-<div id="subjectWeeklyTotals"></div>
+<div id="subjectLimitsOverview"></div>
 </section>
 
 <section id="editor" class="panel">
@@ -142,7 +141,8 @@ Period 2: 10:00–11:30<br>
 Period 3: 12:30–14:00<br>
 Period 4: 14:00–15:30<br>
 Period 5: 15:30–17:00<br>
-Period 6: 17:00–18:30
+Period 6: 17:00–18:30<br><br>
+A teacher can only teach two classes at the same time if those classes are in the <strong>same year</strong>. Different years are blocked.
 </div>
 
 <div class="grid">
@@ -174,17 +174,6 @@ Period 6: 17:00–18:30
 <h2 style="margin-top:24px">All scheduled lessons</h2>
 <div class="table-wrap" id="overviewTable"></div>
 </div>
-</section>
-
-<section id="conflicts" class="panel">
-<h2>Teacher conflict checker</h2>
-<p class="muted">
-Checks whether a teacher is assigned to multiple classes at the same time,
-even if the lessons are different subjects.
-You can mark an exception only when the teacher is teaching exactly two classes in the same year at once.
-</p>
-<button id="checkConflicts">Check for conflicts</button>
-<div id="conflictResults"></div>
 </section>
 
 </main>
@@ -740,20 +729,12 @@ function getLessonCount(classIndex,subjectId){
  return count;
 }
 
-function getSubjectWeeklyTotal(subjectId){
- let count=0;
- Object.values(data.lessons).forEach(lesson=>{
-  if(lesson&&lesson.subjectId===subjectId) count++;
- });
- return count;
-}
-
 function getYearLimit(classIndex,subjectId){
  return limitForClass(subjectById(subjectId),data.classes[classIndex]);
 }
 
-function renderSubjectWeeklyTotals(){
- const container=document.getElementById("subjectWeeklyTotals");
+function renderSubjectLimitsOverview(){
+ const container=document.getElementById("subjectLimitsOverview");
  if(!container) return;
 
  if(!data.subjects.length){
@@ -761,18 +742,48 @@ function renderSubjectWeeklyTotals(){
   return;
  }
 
+ const header=YEAR_LIMIT_GROUPS.map(g=>'<th>'+esc(g.label)+'</th>').join("");
  const rows=data.subjects.map(subject=>{
-  const total=getSubjectWeeklyTotal(subject.id);
   const name=subject.name.trim()||"(unnamed subject)";
-  return '<tr><td>'+esc(name)+'</td><td>'+total+'</td></tr>';
+  const cells=YEAR_LIMIT_GROUPS.map(g=>
+   '<td>'+groupLimitValue(subject.limits,g)+'</td>'
+  ).join("");
+  return '<tr><td>'+esc(name)+'</td>'+cells+'</tr>';
  }).join("");
 
  container.innerHTML=
-  '<h3 style="margin-top:24px">Lessons scheduled this week</h3>'+
-  '<p class="muted">Total number of times each subject appears on the timetable across all classes.</p>'+
-  '<div class="table-wrap"><table><thead><tr><th>Subject</th><th>Times this week</th></tr></thead><tbody>'+
-  rows+
-  '</tbody></table></div>';
+  '<h3 style="margin-top:24px">Subject limits overview</h3>'+
+  '<p class="muted">Weekly lesson limits for each subject by year group and profile.</p>'+
+  '<div class="table-wrap"><table><thead><tr><th>Subject</th>'+header+
+  '</tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+
+function teacherNameFromIds(subjectId,teacherId){
+ const subject=subjectById(subjectId);
+ const teacher=teacherById(subject,teacherId);
+ return teacher&&teacher.name?teacher.name.trim():"";
+}
+
+function findDifferentYearTeacherClash(classIndex,day,period,teacherName){
+ const nameKey=String(teacherName||"").trim().toLowerCase();
+ if(!nameKey||!data.classes[classIndex]) return [];
+ const year=data.classes[classIndex].year;
+ const clashes=[];
+
+ Object.entries(data.lessons).forEach(([k,lesson])=>{
+  const parts=k.split("|");
+  const otherCi=Number(parts[0]);
+  if(otherCi===classIndex||!data.classes[otherCi]) return;
+  if(parts[1]!==day||Number(parts[2])!==period) return;
+
+  const otherName=teacherNameFromIds(lesson.subjectId,lesson.teacherId).toLowerCase();
+  if(otherName!==nameKey) return;
+  if(Number(data.classes[otherCi].year)===Number(year)) return;
+
+  clashes.push(data.classes[otherCi]);
+ });
+
+ return clashes;
 }
 
 // Navigation
@@ -783,8 +794,7 @@ document.querySelectorAll("nav button").forEach(button=>{
   button.classList.add("active");
   document.getElementById(button.dataset.tab).classList.add("active");
   if(button.dataset.tab==="editor") renderEditor();
-  if(button.dataset.tab==="conflicts") renderConflicts();
-  if(button.dataset.tab==="subjects") renderSubjectWeeklyTotals();
+  if(button.dataset.tab==="subjects") renderSubjectLimitsOverview();
  });
 });
 
@@ -844,7 +854,7 @@ function renderSubjects(){
 
  if(data.subjects.length===0){
   container.innerHTML='<p class="empty">No subjects yet. Click “Add a subject” to begin.</p>';
-  renderSubjectWeeklyTotals();
+  renderSubjectLimitsOverview();
   return;
  }
 
@@ -949,11 +959,10 @@ function renderSubjects(){
    persist();
    renderSubjects();
    renderEditor();
-   renderConflicts();
   });
  });
 
- renderSubjectWeeklyTotals();
+ renderSubjectLimitsOverview();
 }
 
 function collectSubjectInputs(validate){
@@ -1075,7 +1084,6 @@ document.getElementById("saveSubjects").addEventListener("click",()=>{
  persist();
  renderSubjects();
  renderEditor();
- renderConflicts();
  showMessage("subjectMessage","Subjects, teacher lists and year limits saved successfully.","success");
 });
 
@@ -1156,7 +1164,6 @@ function renderEditor(){
     delete data.lessons[k];
     persist();
     renderEditor();
-    renderConflicts();
     return;
    }
 
@@ -1184,10 +1191,21 @@ function renderEditor(){
    if(subject.teachers.filter(t=>t.name.trim()).length===0) return;
    if(!teacherId||!teacherById(subject,teacherId)) return;
 
+   const teacherName=teacherById(subject,teacherId).name;
+   const yearClashes=findDifferentYearTeacherClash(ci,day,period.number,teacherName);
+   if(yearClashes.length){
+    alert(
+     teacherName+" is already teaching at this time in a different year:\n\n"+
+     yearClashes.map(c=>c.name+" (Year "+c.year+")").join("\n")+
+     "\n\nA teacher can only cover two classes at once if they are in the same year."
+    );
+    renderEditor();
+    return;
+   }
+
    data.lessons[k]={subjectId,teacherId};
    persist();
    renderEditor();
-   renderConflicts();
   }
 
   subjectSelect.addEventListener("change",()=>{
@@ -1195,7 +1213,6 @@ function renderEditor(){
     delete data.lessons[k];
     persist();
     renderEditor();
-    renderConflicts();
     return;
    }
 
@@ -1224,6 +1241,7 @@ function renderEditor(){
    if(!teacherSelect.value){
     delete data.lessons[k];
     persist();
+    renderEditor();
     return;
    }
    saveSelection();
@@ -1255,16 +1273,6 @@ function renderEditorMessage(ci,day){
   html+='</div>';
  }
 
- const conflicts=getActiveConflicts().filter(c=>
-  c.day===day&&c.entries.some(e=>e.classIndex===ci)
- );
-
- if(conflicts.length){
-  html+='<div class="warning"><strong>Teacher conflict detected!</strong><br>'+
-   conflicts.map(c=>esc(c.teacher)+" is assigned to multiple classes in Period "+c.period+".").join("<br>")+
-   '</div>';
- }
-
  document.getElementById("editorMessage").innerHTML=html;
 }
 
@@ -1280,7 +1288,6 @@ document.getElementById("clearDay").addEventListener("click",()=>{
  PERIODS.forEach(p=>delete data.lessons[key(ci,day,p.number)]);
  persist();
  renderEditor();
- renderConflicts();
 });
 
 // Overview
@@ -1318,139 +1325,6 @@ function renderOverview(){
  container.innerHTML=count?html:'<p class="empty">No lessons scheduled yet.</p>';
 }
 
-// Teacher conflicts
-function conflictKey(conflict){
- return conflict.teacher.trim().toLowerCase()+"|"+conflict.day+"|"+conflict.period;
-}
-
-function isExceptedConflict(conflict){
- return (data.exceptions||[]).indexOf(conflictKey(conflict))>=0;
-}
-
-function canMakeException(conflict){
- const classIndexes=Array.from(new Set(conflict.entries.map(e=>e.classIndex)));
- if(classIndexes.length!==2) return false;
- const y0=data.classes[classIndexes[0]]&&data.classes[classIndexes[0]].year;
- const y1=data.classes[classIndexes[1]]&&data.classes[classIndexes[1]].year;
- return y0!=null&&y0===y1;
-}
-
-function getConflicts(){
- const map=new Map();
-
- Object.entries(data.lessons).forEach(([k,lesson])=>{
-  const parts=k.split("|");
-  const ci=Number(parts[0]);
-  const day=parts[1];
-  const period=Number(parts[2]);
-  if(!data.classes[ci]) return;
-  const subject=subjectById(lesson.subjectId);
-  const teacher=subject&&teacherById(subject,lesson.teacherId);
-
-  if(!teacher||!teacher.name.trim()) return;
-
-  const collisionKey=teacher.name.trim().toLowerCase()+"|"+day+"|"+period;
-
-  if(!map.has(collisionKey)){
-   map.set(collisionKey,{
-    teacher:teacher.name.trim(),
-    day,
-    period,
-    entries:[]
-   });
-  }
-
-  map.get(collisionKey).entries.push({
-   classIndex:ci,
-   className:data.classes[ci].name,
-   year:data.classes[ci].year,
-   subject:subject.name
-  });
- });
-
- return Array.from(map.values()).filter(conflict=>
-  new Set(conflict.entries.map(e=>e.classIndex)).size>1
- );
-}
-
-function getActiveConflicts(){
- return getConflicts().filter(c=>!isExceptedConflict(c));
-}
-
-function renderConflicts(){
- const container=document.getElementById("conflictResults");
- const conflicts=getConflicts();
- const active=conflicts.filter(c=>!isExceptedConflict(c));
- const excepted=conflicts.filter(c=>isExceptedConflict(c));
-
- if(!conflicts.length){
-  container.innerHTML='<div class="success">No teacher conflicts found.</div>';
-  return;
- }
-
- function rows(list,mode){
-  return list.map(c=>{
-   const key=conflictKey(c);
-   let action="";
-   if(mode==="active"&&canMakeException(c)){
-    action='<button type="button" class="secondary exception-btn" data-key="'+esc(key)+'">Exception</button>';
-   }else if(mode==="active"&&!canMakeException(c)){
-    action='<span class="muted">No exception (need exactly 2 classes in the same year)</span>';
-   }else if(mode==="excepted"){
-    action='<button type="button" class="danger remove-exception-btn" data-key="'+esc(key)+'">Remove exception</button>';
-   }
-   return '<tr><td>'+esc(c.teacher)+'</td><td>'+esc(c.day)+'</td><td>Period '+c.period+
-    ' ('+PERIODS[c.period-1].start+'–'+PERIODS[c.period-1].end+')</td><td>'+
-    c.entries.map(e=>esc(e.className)+' — '+esc(e.subject)).join("<br>")+
-    '</td><td>'+action+'</td></tr>';
-  }).join("");
- }
-
- let html="";
- if(active.length){
-  html+=
-   '<div class="warning"><strong>Found '+active.length+' conflict(s).</strong>'+
-   '<div class="table-wrap"><table><thead><tr><th>Teacher</th><th>Day</th><th>Period</th><th>Classes</th><th>Action</th></tr></thead><tbody>'+
-   rows(active,"active")+
-   '</tbody></table></div></div>';
- }else{
-  html+='<div class="success">No active teacher conflicts.</div>';
- }
-
- if(excepted.length){
-  html+=
-   '<div class="notice" style="margin-top:14px"><strong>'+excepted.length+' excepted overlap(s).</strong>'+
-   '<div class="table-wrap"><table><thead><tr><th>Teacher</th><th>Day</th><th>Period</th><th>Classes</th><th>Action</th></tr></thead><tbody>'+
-   rows(excepted,"excepted")+
-   '</tbody></table></div></div>';
- }
-
- container.innerHTML=html;
-
- container.querySelectorAll(".exception-btn").forEach(button=>{
-  button.addEventListener("click",()=>{
-   const key=button.dataset.key;
-   if(!data.exceptions) data.exceptions=[];
-   if(data.exceptions.indexOf(key)<0) data.exceptions.push(key);
-   persist();
-   renderConflicts();
-   renderEditor();
-  });
- });
-
- container.querySelectorAll(".remove-exception-btn").forEach(button=>{
-  button.addEventListener("click",()=>{
-   const key=button.dataset.key;
-   data.exceptions=(data.exceptions||[]).filter(e=>e!==key);
-   persist();
-   renderConflicts();
-   renderEditor();
-  });
- });
-}
-
-document.getElementById("checkConflicts").addEventListener("click",renderConflicts);
-
 function startUi(){
  uiReady=true;
  revealApp();
@@ -1458,7 +1332,6 @@ function startUi(){
  renderSubjects();
  renderClassSelector();
  renderEditor();
- renderConflicts();
 }
 
 function startPolling(){
