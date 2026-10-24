@@ -128,6 +128,7 @@ Every Years 1–5 class can have up to 3 Potions lessons per week, while General
 <button id="saveSubjects">Save subjects, teachers and limits</button>
 </div>
 <div id="subjectMessage"></div>
+<div id="subjectWeeklyTotals"></div>
 </section>
 
 <section id="editor" class="panel">
@@ -739,8 +740,39 @@ function getLessonCount(classIndex,subjectId){
  return count;
 }
 
+function getSubjectWeeklyTotal(subjectId){
+ let count=0;
+ Object.values(data.lessons).forEach(lesson=>{
+  if(lesson&&lesson.subjectId===subjectId) count++;
+ });
+ return count;
+}
+
 function getYearLimit(classIndex,subjectId){
  return limitForClass(subjectById(subjectId),data.classes[classIndex]);
+}
+
+function renderSubjectWeeklyTotals(){
+ const container=document.getElementById("subjectWeeklyTotals");
+ if(!container) return;
+
+ if(!data.subjects.length){
+  container.innerHTML="";
+  return;
+ }
+
+ const rows=data.subjects.map(subject=>{
+  const total=getSubjectWeeklyTotal(subject.id);
+  const name=subject.name.trim()||"(unnamed subject)";
+  return '<tr><td>'+esc(name)+'</td><td>'+total+'</td></tr>';
+ }).join("");
+
+ container.innerHTML=
+  '<h3 style="margin-top:24px">Lessons scheduled this week</h3>'+
+  '<p class="muted">Total number of times each subject appears on the timetable across all classes.</p>'+
+  '<div class="table-wrap"><table><thead><tr><th>Subject</th><th>Times this week</th></tr></thead><tbody>'+
+  rows+
+  '</tbody></table></div>';
 }
 
 // Navigation
@@ -752,6 +784,7 @@ document.querySelectorAll("nav button").forEach(button=>{
   document.getElementById(button.dataset.tab).classList.add("active");
   if(button.dataset.tab==="editor") renderEditor();
   if(button.dataset.tab==="conflicts") renderConflicts();
+  if(button.dataset.tab==="subjects") renderSubjectWeeklyTotals();
  });
 });
 
@@ -811,6 +844,7 @@ function renderSubjects(){
 
  if(data.subjects.length===0){
   container.innerHTML='<p class="empty">No subjects yet. Click “Add a subject” to begin.</p>';
+  renderSubjectWeeklyTotals();
   return;
  }
 
@@ -918,6 +952,8 @@ function renderSubjects(){
    renderConflicts();
   });
  });
+
+ renderSubjectWeeklyTotals();
 }
 
 function collectSubjectInputs(validate){
