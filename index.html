@@ -742,20 +742,22 @@ function renderSubjectLimitsOverview(){
   return;
  }
 
- const header=YEAR_LIMIT_GROUPS.map(g=>'<th>'+esc(g.label)+'</th>').join("");
  const rows=data.subjects.map(subject=>{
   const name=subject.name.trim()||"(unnamed subject)";
-  const cells=YEAR_LIMIT_GROUPS.map(g=>
-   '<td>'+groupLimitValue(subject.limits,g)+'</td>'
-  ).join("");
-  return '<tr><td>'+esc(name)+'</td>'+cells+'</tr>';
+  let total=0;
+  data.classes.forEach(c=>{
+   const limit=limitForClass(subject,c);
+   if(limit>0) total+=limit;
+  });
+  return '<tr><td>'+esc(name)+'</td><td>'+total+'</td></tr>';
  }).join("");
 
  container.innerHTML=
-  '<h3 style="margin-top:24px">Subject limits overview</h3>'+
-  '<p class="muted">Weekly lesson limits for each subject by year group and profile.</p>'+
-  '<div class="table-wrap"><table><thead><tr><th>Subject</th>'+header+
-  '</tr></thead><tbody>'+rows+'</tbody></table></div>';
+  '<h3 style="margin-top:24px">Subject totals</h3>'+
+  '<p class="muted">For each subject, the weekly limits of every class that takes it are added together.</p>'+
+  '<div class="table-wrap"><table><thead><tr><th>Subject</th><th>Total lessons per week (all classes)</th></tr></thead><tbody>'+
+  rows+
+  '</tbody></table></div>';
 }
 
 function teacherNameFromIds(subjectId,teacherId){
