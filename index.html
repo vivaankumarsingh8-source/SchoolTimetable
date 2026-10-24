@@ -121,7 +121,7 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 
 <section id="students" class="panel">
 <h2>Students and scores</h2>
-<p class="muted">Choose a class, then click a student to enter or edit their subject scores. Every student has a unique name and unique surname.</p>
+<p class="muted">Choose a class, then click a student to enter or edit their subject scores. Every first name and every surname is unique across the whole school.</p>
 <div class="grid">
 <div>
 <label for="studentClassFilter">Class</label>
@@ -252,7 +252,7 @@ function getWriteToken(){
  }
 }
 
-const SCHEMA_VERSION=11;
+const SCHEMA_VERSION=12;
 const CLASS_COUNT=47;
 const LESSONS_PER_TEACHER=25;
 const HOUSES=["Ivrella","Emilora","Johansen","Caspiella","Everett"];
@@ -457,18 +457,50 @@ function syncSubjectTeacherCounts(subjects,classes,lessons){
  return subjects;
 }
 
-const STUDENT_FIRST_NAMES=[
- "Noah","Olivia","Liam","Emma","Lucas","Amelia","Ethan","Harper","Mason","Ella",
- "Logan","Scarlett","Benjamin","Grace","Henry","Chloe","Jack","Zoe","Samuel","Layla",
- "Daniel","Nora","Matthew","Riley","David","Aria","Joseph","Penelope","Thomas","Luna",
- "Charles","Hannah","Christopher","Addison","Andrew","Eleanor","Joshua","Willow","Ryan","Audrey",
- "Nathan","Stella","Caleb","Naomi","Isaac","Claire","Aaron","Paisley","Hunter","Skylar",
- "Connor","Violet","Christian","Savannah","Jonathan","Brooklyn","Gabriel","Bella","Julian","Hazel",
- "Lily","Fleur","Sophia","Emily","Ava","Mia","James","Adam","Owen","Milo",
- "Elena","Alice","Leo","Linda","Lincoln","Ruby","Ivy","Felix","Clara","Hugo",
- "Nina","Theo","Iris","Oscar","Freya","Arthur","Maya","Levi","Sofia","Jasper",
- "Eliza","Miles","Autumn","Roman","Sienna","Elliot","Pearl","Victor","Daisy","Cora"
-];
+function buildFirstNamePool(){
+ const reserved=[
+  "Lily","Fleur","Sophia","Emily","Ava","Mia","James","Adam","Julian","Owen",
+  "Milo","Elena","Alice","Leo","Linda","Joseph","Lincoln"
+ ];
+ const base=[
+  "Noah","Olivia","Liam","Emma","Lucas","Amelia","Ethan","Harper","Mason","Ella",
+  "Logan","Scarlett","Benjamin","Grace","Henry","Chloe","Jack","Zoe","Samuel","Layla",
+  "Daniel","Nora","Matthew","Riley","David","Aria","Penelope","Thomas","Luna","Charles",
+  "Hannah","Christopher","Addison","Andrew","Eleanor","Joshua","Willow","Ryan","Audrey","Nathan",
+  "Stella","Caleb","Naomi","Isaac","Claire","Aaron","Paisley","Hunter","Skylar","Connor",
+  "Violet","Christian","Savannah","Jonathan","Brooklyn","Gabriel","Bella","Hazel","Ruby","Ivy",
+  "Felix","Clara","Hugo","Nina","Theo","Iris","Oscar","Freya","Arthur","Maya",
+  "Levi","Sofia","Jasper","Eliza","Miles","Autumn","Roman","Sienna","Elliot","Pearl",
+  "Victor","Daisy","Cora","Silas","Aurora","Beatrice","Cassius","Daphne","Edmund","Fiona",
+  "Gideon","Helena","Imogen","Jonah","Keira","Lydia","Marcus","Nadia","Ophelia","Phoebe",
+  "Quentin","Rebecca","Sebastian","Tessa","Uriel","Vanessa","Wesley","Xenia","Yvonne","Zachary",
+  "Adrian","Brielle","Cedric","Delilah","Everett","Felicity","Griffin","Harriet","Isadora","Jeremy",
+  "Katarina","Lucille","Maxwell","Noelle","Orlando","Priscilla","Rafael","Seraphina","Tobias","Una",
+  "Valerie","Warren","Yara","Zane","Ansel","Bianca","Callum","Desiree","Evangeline","Franklin",
+  "Georgia","Holden","Ingrid","Juliet","Kenneth","Lorraine","Magnus","Noelle","Ottilie","Pascal"
+ ];
+ const prefixes=[
+  "Al","An","Ar","Bel","Bri","Ca","Cor","Da","El","Fa","Fi","Ga","Ha","Ja","Ka",
+  "La","Le","Ma","Mi","Na","Ni","Ol","Pa","Ra","Ro","Sa","Si","Ta","Te","Vi"
+ ];
+ const endings=[
+  "a","ah","an","ara","en","ena","ia","ian","iel","in","ina","is","la","lyn","na",
+  "o","on","or","ora","ra","ren","rin","son","ta","ton","us","ya","elle","ette","ique"
+ ];
+ const pool=new Set(reserved.concat(base));
+ prefixes.forEach(prefix=>{
+  endings.forEach(end=>{
+   const name=prefix+end;
+   if(name.length>=3) pool.add(name.charAt(0).toUpperCase()+name.slice(1).toLowerCase());
+  });
+ });
+ let extra=1;
+ while(pool.size<650){
+  pool.add("Firstname"+extra);
+  extra++;
+ }
+ return Array.from(pool);
+}
 
 function buildSurnamePool(){
  const reserved=[
@@ -507,7 +539,13 @@ function buildSurnamePool(){
  return Array.from(pool);
 }
 
+const STUDENT_FIRST_NAME_POOL=buildFirstNamePool();
 const STUDENT_SURNAME_POOL=buildSurnamePool();
+
+function studentFirstName(fullName){
+ const parts=String(fullName||"").trim().split(/\s+/);
+ return parts.length?parts[0]:"";
+}
 
 function studentSurname(fullName){
  const parts=String(fullName||"").trim().split(/\s+/);
@@ -538,26 +576,45 @@ function shuffleInPlace(list){
  return list;
 }
 
-function nextGeneratedStudentName(usedFullNames,usedSurnames,surnameQueue){
- while(surnameQueue.length){
-  const last=surnameQueue.shift();
-  if(usedSurnames.has(last.toLowerCase())) continue;
-  for(let i=0;i<STUDENT_FIRST_NAMES.length;i++){
-   const first=STUDENT_FIRST_NAMES[i];
-   const full=first+" "+last;
-   if(usedFullNames.has(full.toLowerCase())) continue;
-   usedFullNames.add(full.toLowerCase());
-   usedSurnames.add(last.toLowerCase());
-   return full;
+function nextGeneratedStudentName(usedFullNames,usedFirstNames,usedSurnames,firstNameQueue,surnameQueue){
+ while(firstNameQueue.length&&surnameQueue.length){
+  let first=null;
+  while(firstNameQueue.length){
+   const candidate=firstNameQueue.shift();
+   if(!usedFirstNames.has(candidate.toLowerCase())){
+    first=candidate;
+    break;
+   }
   }
+  let last=null;
+  while(surnameQueue.length){
+   const candidate=surnameQueue.shift();
+   if(!usedSurnames.has(candidate.toLowerCase())){
+    last=candidate;
+    break;
+   }
+  }
+  if(!first||!last) break;
+  const full=first+" "+last;
+  if(usedFullNames.has(full.toLowerCase())) continue;
+  usedFullNames.add(full.toLowerCase());
+  usedFirstNames.add(first.toLowerCase());
+  usedSurnames.add(last.toLowerCase());
+  return full;
  }
  let n=1;
  while(true){
-  const last="Newname"+n;
-  const full="Student "+last;
+  const first="First"+n;
+  const last="Last"+n;
+  const full=first+" "+last;
   n++;
-  if(usedFullNames.has(full.toLowerCase())||usedSurnames.has(last.toLowerCase())) continue;
+  if(
+   usedFullNames.has(full.toLowerCase())||
+   usedFirstNames.has(first.toLowerCase())||
+   usedSurnames.has(last.toLowerCase())
+  ) continue;
   usedFullNames.add(full.toLowerCase());
+  usedFirstNames.add(first.toLowerCase());
   usedSurnames.add(last.toLowerCase());
   return full;
  }
@@ -565,15 +622,19 @@ function nextGeneratedStudentName(usedFullNames,usedSurnames,surnameQueue){
 
 function makeDefaultStudents(classes){
  const usedFullNames=new Set();
+ const usedFirstNames=new Set();
  const usedSurnames=new Set();
+ const firstNameQueue=shuffleInPlace(STUDENT_FIRST_NAME_POOL.slice());
  const surnameQueue=shuffleInPlace(STUDENT_SURNAME_POOL.slice());
  const presetByClass={};
  classes.forEach(c=>{presetByClass[c.name]=[];});
 
  function reserve(name){
   const full=String(name).trim();
+  const first=studentFirstName(full);
   const last=studentSurname(full);
   usedFullNames.add(full.toLowerCase());
+  if(first) usedFirstNames.add(first.toLowerCase());
   if(last) usedSurnames.add(last.toLowerCase());
   return full;
  }
@@ -610,7 +671,9 @@ function makeDefaultStudents(classes){
   const capacity=studentCapacityForClass(c,classIndex,classes);
   const names=(presetByClass[c.name]||[]).slice();
   while(names.length<capacity){
-   names.push(nextGeneratedStudentName(usedFullNames,usedSurnames,surnameQueue));
+   names.push(nextGeneratedStudentName(
+    usedFullNames,usedFirstNames,usedSurnames,firstNameQueue,surnameQueue
+   ));
   }
   names.slice(0,capacity).forEach(name=>{
    students.push({id:makeId(),name,classIndex,scores:{}});
@@ -1297,7 +1360,11 @@ function hidePromotionPanel(){
 
 function createYear1Students(classes,existingStudents){
  const usedFullNames=new Set(existingStudents.map(s=>String(s.name||"").toLowerCase()));
+ const usedFirstNames=new Set(existingStudents.map(s=>studentFirstName(s.name).toLowerCase()).filter(Boolean));
  const usedSurnames=new Set(existingStudents.map(s=>studentSurname(s.name).toLowerCase()).filter(Boolean));
+ const firstNameQueue=shuffleInPlace(
+  STUDENT_FIRST_NAME_POOL.filter(n=>!usedFirstNames.has(n.toLowerCase()))
+ );
  const surnameQueue=shuffleInPlace(
   STUDENT_SURNAME_POOL.filter(s=>!usedSurnames.has(s.toLowerCase()))
  );
@@ -1309,7 +1376,9 @@ function createYear1Students(classes,existingStudents){
   for(let i=0;i<10;i++){
    created.push({
     id:makeId(),
-    name:nextGeneratedStudentName(usedFullNames,usedSurnames,surnameQueue),
+    name:nextGeneratedStudentName(
+     usedFullNames,usedFirstNames,usedSurnames,firstNameQueue,surnameQueue
+    ),
     classIndex,
     scores:{}
    });
