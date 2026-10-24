@@ -1015,6 +1015,32 @@ let lastRemoteText="";
 let lastUpdatedAt="";
 let saveGeneration=0;
 let selectedStudentId="";
+let rateLimitedUntil=0;
+let rateLimitAlertShown=false;
+const POLL_MS=60000;
+const SAVE_DEBOUNCE_MS=2500;
+
+function isRateLimited(){
+ return Date.now()<rateLimitedUntil;
+}
+
+function noteRateLimit(err){
+ const msg=String(err&&err.message||err||"");
+ const limited=/rate limit/i.test(msg);
+ if(!limited) return false;
+ // Back off for 20 minutes so GitHub can recover.
+ rateLimitedUntil=Date.now()+20*60*1000;
+ setSyncStatus("GitHub rate limit hit — editing stays on this laptop for ~20 minutes, then shared save retries.");
+ if(!rateLimitAlertShown){
+  rateLimitAlertShown=true;
+  alert(
+   "GitHub is temporarily blocking shared saves (rate limit).\n\n"+
+   "You can keep editing on this laptop. Shared online save will work again in about 20 minutes.\n\n"+
+   "A local backup is kept here. Avoid hard-refresh until the top bar says saved."
+  );
+ }
+ return true;
+}
 
 function setSyncStatus(message){
  const el=document.getElementById("syncStatus");
@@ -1197,6 +1223,11 @@ function persist(immediate){
  const runSave=function(){
   const payload=JSON.parse(JSON.stringify(data));
   writeLocalBackup(payload);
+  if(isRateLimited()){
+   const mins=Math.max(1,Math.ceil((rateLimitedUntil-Date.now())/60000));
+   setSyncStatus("Saved on this laptop only — GitHub rate limit (~"+mins+" min left).");
+   return;
+  }
   const generation=++saveGeneration;
   setSyncStatus("Saving shared timetable…");
   ensureWriteToken().then(function(ok){
@@ -1207,6 +1238,8 @@ function persist(immediate){
    writing=true;
    saveSharedData(payload).then(function(result){
     if(generation!==saveGeneration) return;
+    rateLimitedUntil=0;
+    rateLimitAlertShown=false;
     lastRemoteText=result.text;
     lastUpdatedAt=result.updatedAt||lastUpdatedAt;
     setSyncStatus("Saved to shared timetable · "+new Date().toLocaleTimeString());
@@ -1216,13 +1249,14 @@ function persist(immediate){
    }).catch(function(err){
     if(generation!==saveGeneration) return;
     writing=false;
+    if(noteRateLimit(err)) return;
     setSyncStatus("Save failed — kept a local backup on this laptop.");
     alert("Could not save the shared timetable. "+(err&&err.message?err.message:"")+"\n\nA local backup was kept on this laptop.");
    });
   });
  };
  if(immediate) runSave();
- else persistTimer=setTimeout(runSave,400);
+ else persistTimer=setTimeout(runSave,SAVE_DEBOUNCE_MS);
 }
 
 window.addEventListener("beforeunload",function(){
@@ -1243,14 +1277,22 @@ function pullSharedData(manual){
   if(manual) setSyncStatus("Wait — a save is still in progress…");
   return Promise.resolve(false);
  }
+ if(isRateLimited()){
+  const mins=Math.max(1,Math.ceil((rateLimitedUntil-Date.now())/60000));
+  if(manual) setSyncStatus("Refresh paused — GitHub rate limit (~"+mins+" min left).");
+  return Promise.resolve(false);
+ }
  if(manual) setSyncStatus("Refreshing…");
  return loadSharedData().then(function(result){
+  rateLimitedUntil=0;
+  rateLimitAlertShown=false;
   const changed=applyRemoteData(result.raw,{updatedAt:result.updatedAt});
   if(!changed){
    setSyncStatus("Up to date"+(result.updatedAt?" · "+new Date(result.updatedAt).toLocaleTimeString():""));
   }
   return changed;
  }).catch(function(err){
+  if(noteRateLimit(err)) return false;
   setSyncStatus("Refresh failed"+(err&&err.message?": "+err.message:""));
   return false;
  });
@@ -2561,14 +2603,12 @@ function startUi(){
 
 function startPolling(){
  if(pollTimer) clearInterval(pollTimer);
+ // Poll rarely — frequent GitHub API calls hit the rate limit quickly.
  pollTimer=setInterval(function(){
-  pullSharedData(false);
- },2000);
- document.addEventListener("visibilitychange",function(){
   if(!document.hidden) pullSharedData(false);
- });
- window.addEventListener("focus",function(){
-  pullSharedData(false);
+ },POLL_MS);
+ document.addEventListener("visibilitychange",function(){
+  if(!document.hidden&&!isRateLimited()) pullSharedData(false);
  });
 }
 
