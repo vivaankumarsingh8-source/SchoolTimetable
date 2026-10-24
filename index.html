@@ -19,7 +19,13 @@ button.secondary{background:#64748b}
 button.danger{background:#b42335}
 nav button{background:#e6ecfb;color:#243d7d}
 nav button.active{background:#304c9b;color:white}
-main{max-width:1250px;margin:22px auto;padding:0 14px}
+main{max-width:1600px;margin:22px auto;padding:0 14px}
+.day-board{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}
+.day-board th,.day-board td{padding:6px;border:1px solid #dce2ec;vertical-align:top}
+.day-board th{background:#eaf0ff;font-size:12px;white-space:nowrap}
+.day-board .class-name{font-weight:bold;white-space:nowrap;position:sticky;left:0;background:#fff;z-index:1;min-width:120px}
+.day-board .cell-stack{display:flex;flex-direction:column;gap:4px;min-width:130px}
+.day-board select{width:100%;padding:5px;font-size:12px}
 .panel{display:none;background:white;border-radius:12px;padding:22px;margin-bottom:20px;box-shadow:0 3px 12px #0000000b}
 .panel.active{display:block}
 h2{margin-top:0}
@@ -148,11 +154,16 @@ A teacher can only teach two classes at the same time if those classes are in th
 
 <div class="grid">
 <div>
-<label for="selectedClass">Choose a class</label>
-<select id="selectedClass"></select>
+<label for="selectedYearGroup">Year group</label>
+<select id="selectedYearGroup">
+<option value="1-5">Years 1–5 (all classes)</option>
+<option value="6">Year 6 (all classes)</option>
+<option value="7">Year 7 (all classes)</option>
+<option value="8-10">Years 8–10 (all profiles)</option>
+</select>
 </div>
 <div>
-<label for="selectedDay">Choose a day</label>
+<label for="selectedDay">Day</label>
 <select id="selectedDay">
 <option>Monday</option>
 <option>Tuesday</option>
@@ -163,12 +174,14 @@ A teacher can only teach two classes at the same time if those classes are in th
 </div>
 </div>
 
-<div id="periodEditor"></div>
+<p class="muted" style="margin-top:12px">All classes in the chosen year group are shown for that day. Edit any period cell directly.</p>
+
+<div class="table-wrap" id="periodEditor"></div>
 <div id="editorMessage"></div>
 
 <div class="actions">
-<button id="clearDay" class="danger">Clear this day's timetable</button>
-<button id="showOverview" class="secondary">View all classes</button>
+<button id="clearDay" class="danger">Clear this day for all shown classes</button>
+<button id="showOverview" class="secondary">View all scheduled lessons</button>
 </div>
 
 <div id="overview" style="display:none">
@@ -607,7 +620,6 @@ function refreshUiFromData(){
  if(!uiReady) return;
  renderClasses();
  renderSubjects();
- renderClassSelector();
  renderEditor();
 }
 
@@ -789,8 +801,24 @@ function showMessage(id,message,type){
   :"";
 }
 
-function currentClassIndex(){
- return Number(document.getElementById("selectedClass").value||0);
+const EDITOR_YEAR_GROUPS={
+ "1-5":{label:"Years 1–5",match:c=>Number(c.year)>=1&&Number(c.year)<=5},
+ "6":{label:"Year 6",match:c=>Number(c.year)===6},
+ "7":{label:"Year 7",match:c=>Number(c.year)===7},
+ "8-10":{label:"Years 8–10",match:c=>Number(c.year)>=8&&Number(c.year)<=10}
+};
+
+function currentYearGroupId(){
+ const select=document.getElementById("selectedYearGroup");
+ const id=select&&select.value;
+ return EDITOR_YEAR_GROUPS[id]?id:"1-5";
+}
+
+function classesInCurrentYearGroup(){
+ const group=EDITOR_YEAR_GROUPS[currentYearGroupId()];
+ return data.classes
+  .map((c,index)=>({c,index}))
+  .filter(item=>group.match(item.c));
 }
 
 function getLessonCount(classIndex,subjectId){
@@ -894,15 +922,6 @@ function renderClasses(){
  });
 }
 
-function renderClassSelector(){
- const select=document.getElementById("selectedClass");
- const previous=select.value;
- select.innerHTML=data.classes.map((c,i)=>
-  '<option value="'+i+'">'+esc(c.name)+' (Year '+c.year+')</option>'
- ).join("");
- if(previous!==""&&Number(previous)<data.classes.length) select.value=previous;
-}
-
 document.getElementById("saveClasses").addEventListener("click",()=>{
  const defaults=makeDefaultClasses();
  data.classes=data.classes.map((c,i)=>{
@@ -915,7 +934,6 @@ document.getElementById("saveClasses").addEventListener("click",()=>{
 
  persist();
  renderClasses();
- renderClassSelector();
  renderEditor();
  showMessage("classMessage","Class names and school years saved.","success");
 });
@@ -1163,205 +1181,197 @@ document.getElementById("saveSubjects").addEventListener("click",()=>{
  showMessage("subjectMessage","Subjects, teacher lists and year limits saved successfully. Teachers adjusted to at least 1 per 25 weekly lessons.","success");
 });
 
-// Timetable editor
-function renderEditor(){
- renderClassSelector();
-
- const ci=currentClassIndex();
- const day=document.getElementById("selectedDay").value;
- const container=document.getElementById("periodEditor");
- container.innerHTML="";
-
- PERIODS.forEach(period=>{
-  if(period.number===3){
-   const lunch=document.createElement("div");
-   lunch.className="lunch";
-   lunch.textContent="🍽 Lunch break · 11:30–12:30";
-   container.appendChild(lunch);
-  }
-
-  const k=key(ci,day,period.number);
-  const existing=data.lessons[k]||{subjectId:"",teacherId:""};
-
-  const row=document.createElement("div");
-  row.className="period-row";
-
-  const time=document.createElement("div");
-  time.className="period-time";
-  time.innerHTML="Period "+period.number+
-   "<small>"+period.start+"–"+period.end+"</small>";
-
-  const subjectSelect=document.createElement("select");
-  subjectSelect.setAttribute("aria-label","Subject for period "+period.number);
-
-  subjectSelect.innerHTML='<option value="">— Free period —</option>';
-
-  data.subjects.forEach(subject=>{
-   const count=getLessonCount(ci,subject.id);
-   const limit=getYearLimit(ci,subject.id);
-   const isCurrent=subject.id===existing.subjectId;
-
+// Timetable editor — one day, all classes in a year group
+function fillTeacherSelect(teacherSelect,subjectId,selectedTeacherId){
+ teacherSelect.innerHTML='<option value="">— Teacher —</option>';
+ const subject=subjectById(subjectId);
+ if(subject){
+  subject.teachers.filter(t=>t.name.trim()).forEach(teacher=>{
    const option=document.createElement("option");
-   option.value=subject.id;
-   option.textContent=subject.name+" ("+count+"/"+limit+" lessons this week)";
-   option.disabled=(count>=limit&&!isCurrent);
-   subjectSelect.appendChild(option);
+   option.value=teacher.id;
+   option.textContent=teacher.name;
+   teacherSelect.appendChild(option);
   });
-
-  subjectSelect.value=existing.subjectId||"";
-
-  const teacherSelect=document.createElement("select");
-  teacherSelect.setAttribute("aria-label","Teacher for period "+period.number);
-
-  function fillTeachers(subjectId,selectedTeacherId){
-   teacherSelect.innerHTML='<option value="">— Choose a teacher —</option>';
-   const subject=subjectById(subjectId);
-
-   if(subject){
-    subject.teachers.filter(t=>t.name.trim()).forEach(teacher=>{
-     const option=document.createElement("option");
-     option.value=teacher.id;
-     option.textContent=teacher.name;
-     teacherSelect.appendChild(option);
-    });
-   }
-
-   teacherSelect.disabled=!subjectId;
-   teacherSelect.value=selectedTeacherId||"";
-  }
-
-  fillTeachers(existing.subjectId,existing.teacherId);
-
-  function saveSelection(){
-   const subjectId=subjectSelect.value;
-   const teacherId=teacherSelect.value;
-
-   if(!subjectId){
-    delete data.lessons[k];
-    persist();
-    renderEditor();
-    return;
-   }
-
-   const subject=subjectById(subjectId);
-   if(!subject) return;
-
-   const count=getLessonCount(ci,subjectId);
-   const old=data.lessons[k];
-   const oldIsSame=(old&&old.subjectId===subjectId);
-   const countAfterChange=count-(oldIsSame?1:0)+1;
-   const limit=getYearLimit(ci,subjectId);
-
-   if(countAfterChange>limit){
-    alert(
-     "Weekly limit reached!\n\n"+data.classes[ci].name+
-     " is in Year "+data.classes[ci].year+".\n"+
-     subject.name+" has a limit of "+limit+
-     " lessons per week for Year "+data.classes[ci].year+"."
-    );
-    renderEditor();
-    return;
-   }
-
-   // Wait quietly until a teacher is chosen — no popup.
-   if(subject.teachers.filter(t=>t.name.trim()).length===0) return;
-   if(!teacherId||!teacherById(subject,teacherId)) return;
-
-   const teacherName=teacherById(subject,teacherId).name;
-   const yearClashes=findDifferentYearTeacherClash(ci,day,period.number,teacherName);
-   if(yearClashes.length){
-    alert(
-     teacherName+" is already teaching at this time in a different year:\n\n"+
-     yearClashes.map(c=>c.name+" (Year "+c.year+")").join("\n")+
-     "\n\nA teacher can only cover two classes at once if they are in the same year."
-    );
-    renderEditor();
-    return;
-   }
-
-   data.lessons[k]={subjectId,teacherId};
-   persist();
-   renderEditor();
-  }
-
-  subjectSelect.addEventListener("change",()=>{
-   if(!subjectSelect.value){
-    delete data.lessons[k];
-    persist();
-    renderEditor();
-    return;
-   }
-
-   const subject=subjectById(subjectSelect.value);
-   const count=getLessonCount(ci,subject.id);
-   const old=data.lessons[k];
-   const countAfterChange=count-((old&&old.subjectId===subject.id)?1:0)+1;
-   const limit=getYearLimit(ci,subject.id);
-
-   if(countAfterChange>limit){
-    alert("Weekly limit reached for "+subject.name+" in Year "+data.classes[ci].year+".");
-    renderEditor();
-    return;
-   }
-
-   const namedTeachers=subject.teachers.filter(t=>t.name.trim());
-   fillTeachers(subject.id,namedTeachers.length===1?namedTeachers[0].id:"");
-   if(namedTeachers.length===1){
-    saveSelection();
-   }
-   // If several teachers (or none), wait for a teacher choice — no popup.
-  });
-
-  teacherSelect.addEventListener("change",()=>{
-   if(!subjectSelect.value) return;
-   if(!teacherSelect.value){
-    delete data.lessons[k];
-    persist();
-    renderEditor();
-    return;
-   }
-   saveSelection();
-  });
-
-  row.appendChild(time);
-  row.appendChild(subjectSelect);
-  row.appendChild(teacherSelect);
-  container.appendChild(row);
- });
-
- renderEditorMessage(ci,day);
+ }
+ teacherSelect.disabled=!subjectId;
+ teacherSelect.value=selectedTeacherId||"";
 }
 
-function renderEditorMessage(ci,day){
- const counts=data.subjects.map(subject=>({
-  name:subject.name,
-  count:getLessonCount(ci,subject.id),
-  limit:getYearLimit(ci,subject.id)
- }));
+function trySaveLesson(ci,day,periodNumber,subjectId,teacherId){
+ const k=key(ci,day,periodNumber);
 
- let html='<div class="success">Changes are saved automatically in this browser.</div>';
-
- if(counts.length){
-  html+='<div class="notice"><strong>Weekly lesson counts for '+
-   esc(data.classes[ci].name)+' (Year '+data.classes[ci].year+'):</strong><br>';
-
-  html+=counts.map(s=>esc(s.name)+": "+s.count+"/"+s.limit).join("<br>");
-  html+='</div>';
+ if(!subjectId){
+  delete data.lessons[k];
+  persist();
+  return {ok:true,cleared:true};
  }
+
+ const subject=subjectById(subjectId);
+ if(!subject) return {ok:false,error:"Subject not found."};
+
+ const count=getLessonCount(ci,subjectId);
+ const old=data.lessons[k];
+ const oldIsSame=(old&&old.subjectId===subjectId);
+ const countAfterChange=count-(oldIsSame?1:0)+1;
+ const limit=getYearLimit(ci,subjectId);
+
+ if(countAfterChange>limit){
+  return {
+   ok:false,
+   error:data.classes[ci].name+" already has the weekly limit of "+limit+" for "+subject.name+"."
+  };
+ }
+
+ if(subject.teachers.filter(t=>t.name.trim()).length===0){
+  return {ok:false,silent:true};
+ }
+ if(!teacherId||!teacherById(subject,teacherId)){
+  return {ok:false,silent:true};
+ }
+
+ const teacherName=teacherById(subject,teacherId).name;
+ const yearClashes=findDifferentYearTeacherClash(ci,day,periodNumber,teacherName);
+ if(yearClashes.length){
+  return {
+   ok:false,
+   error:teacherName+" is already teaching at this time in a different year:\n\n"+
+    yearClashes.map(c=>c.name+" (Year "+c.year+")").join("\n")+
+    "\n\nA teacher can only cover two classes at once if they are in the same year."
+  };
+ }
+
+ data.lessons[k]={subjectId,teacherId};
+ persist();
+ return {ok:true};
+}
+
+function renderEditor(){
+ const day=document.getElementById("selectedDay").value;
+ const container=document.getElementById("periodEditor");
+ const classItems=classesInCurrentYearGroup();
+ container.innerHTML="";
+
+ if(!classItems.length){
+  container.innerHTML='<p class="empty">No classes in this year group.</p>';
+  renderEditorMessage(day,[]);
+  return;
+ }
+
+ const table=document.createElement("table");
+ table.className="day-board";
+
+ const thead=document.createElement("thead");
+ thead.innerHTML='<tr><th class="class-name">Class</th>'+
+  PERIODS.map(p=>'<th>P'+p.number+'<br><small>'+p.start+'–'+p.end+'</small></th>').join("")+
+  '</tr>';
+ table.appendChild(thead);
+
+ const tbody=document.createElement("tbody");
+
+ classItems.forEach(({c,index:ci})=>{
+  const tr=document.createElement("tr");
+  const nameCell=document.createElement("td");
+  nameCell.className="class-name";
+  nameCell.innerHTML=esc(c.name)+'<br><small style="font-weight:normal;color:#667085">Year '+c.year+'</small>';
+  tr.appendChild(nameCell);
+
+  PERIODS.forEach(period=>{
+   const td=document.createElement("td");
+   const stack=document.createElement("div");
+   stack.className="cell-stack";
+
+   const k=key(ci,day,period.number);
+   const existing=data.lessons[k]||{subjectId:"",teacherId:""};
+
+   const subjectSelect=document.createElement("select");
+   subjectSelect.setAttribute("aria-label",c.name+" period "+period.number+" subject");
+   subjectSelect.innerHTML='<option value="">— Free —</option>';
+
+   data.subjects.forEach(subject=>{
+    const count=getLessonCount(ci,subject.id);
+    const limit=getYearLimit(ci,subject.id);
+    const isCurrent=subject.id===existing.subjectId;
+    const option=document.createElement("option");
+    option.value=subject.id;
+    option.textContent=subject.name+" ("+count+"/"+limit+")";
+    option.disabled=(count>=limit&&!isCurrent);
+    subjectSelect.appendChild(option);
+   });
+   subjectSelect.value=existing.subjectId||"";
+
+   const teacherSelect=document.createElement("select");
+   teacherSelect.setAttribute("aria-label",c.name+" period "+period.number+" teacher");
+   fillTeacherSelect(teacherSelect,existing.subjectId,existing.teacherId);
+
+   function applySave(subjectId,teacherId){
+    const result=trySaveLesson(ci,day,period.number,subjectId,teacherId);
+    if(!result.ok){
+     if(result.error) alert(result.error);
+     renderEditor();
+     return;
+    }
+    renderEditor();
+   }
+
+   subjectSelect.addEventListener("change",()=>{
+    if(!subjectSelect.value){
+     applySave("","");
+     return;
+    }
+    const subject=subjectById(subjectSelect.value);
+    if(!subject) return;
+    const namedTeachers=subject.teachers.filter(t=>t.name.trim());
+    fillTeacherSelect(teacherSelect,subject.id,namedTeachers.length===1?namedTeachers[0].id:"");
+    if(namedTeachers.length===1) applySave(subject.id,namedTeachers[0].id);
+   });
+
+   teacherSelect.addEventListener("change",()=>{
+    if(!subjectSelect.value) return;
+    if(!teacherSelect.value){
+     applySave("","");
+     return;
+    }
+    applySave(subjectSelect.value,teacherSelect.value);
+   });
+
+   stack.appendChild(subjectSelect);
+   stack.appendChild(teacherSelect);
+   td.appendChild(stack);
+   tr.appendChild(td);
+  });
+
+  tbody.appendChild(tr);
+ });
+
+ table.appendChild(tbody);
+ container.appendChild(table);
+ renderEditorMessage(day,classItems);
+}
+
+function renderEditorMessage(day,classItems){
+ const group=EDITOR_YEAR_GROUPS[currentYearGroupId()];
+ let html='<div class="success">Showing '+classItems.length+' classes for '+
+  esc(group.label)+' on '+esc(day)+'. Changes save automatically.</div>';
+
+ html+='<div class="lunch">🍽 Lunch break · 11:30–12:30 (between Period 2 and Period 3)</div>';
 
  document.getElementById("editorMessage").innerHTML=html;
 }
 
-document.getElementById("selectedClass").addEventListener("change",renderEditor);
+document.getElementById("selectedYearGroup").addEventListener("change",renderEditor);
 document.getElementById("selectedDay").addEventListener("change",renderEditor);
 
 document.getElementById("clearDay").addEventListener("click",()=>{
- const ci=currentClassIndex();
  const day=document.getElementById("selectedDay").value;
+ const classItems=classesInCurrentYearGroup();
+ const group=EDITOR_YEAR_GROUPS[currentYearGroupId()];
 
- if(!confirm("Clear every lesson for "+data.classes[ci].name+" on "+day+"?")) return;
+ if(!classItems.length) return;
+ if(!confirm("Clear every lesson for all "+group.label+" classes on "+day+"?")) return;
 
- PERIODS.forEach(p=>delete data.lessons[key(ci,day,p.number)]);
+ classItems.forEach(({index:ci})=>{
+  PERIODS.forEach(p=>delete data.lessons[key(ci,day,p.number)]);
+ });
  persist();
  renderEditor();
 });
@@ -1406,7 +1416,6 @@ function startUi(){
  revealApp();
  renderClasses();
  renderSubjects();
- renderClassSelector();
  renderEditor();
 }
 
