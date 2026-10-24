@@ -52,7 +52,7 @@ table{width:100%;border-collapse:collapse;margin-top:12px}
 th,td{padding:10px;border:1px solid #dce2ec;text-align:left}
 th{background:#eaf0ff}
 .empty{color:#667085;padding:15px 0}
-.limits-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:12px;margin-top:12px}
+.limits-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-top:12px}
 .limit-field label{font-size:13px}
 footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 #syncBar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;padding:10px 14px;background:#eef4ff;border-bottom:1px solid #d7e0f5;font-size:14px;color:#243d7d}
@@ -86,7 +86,7 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 
 <header>
 <h1>🏫 School Timetable Builder</h1>
-<p>50 classes · Years 1–10 · Multiple teachers per subject</p>
+<p>47 classes · Years 1–7 by house · Years 8–10 by profile</p>
 </header>
 
 <nav>
@@ -100,7 +100,7 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 
 <section id="classes" class="panel active">
 <h2>Classes and school years</h2>
-<p class="muted">Give each class a name and select its year, from Year 1 to Year 10.</p>
+<p class="muted">Years 1–7 use house names (Ivrella, Emilora, Johansen, Caspiella, Everett). Years 8–10 use profile names: General Stuff, Spells, Hand Magic, and Important Magic.</p>
 <div id="classFields"></div>
 <div class="actions">
 <button id="saveClasses">Save classes</button>
@@ -113,14 +113,13 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 <p class="muted">
 Create each subject once. Add all the teachers who can teach it.
 Teacher names must be unique across every subject.
-Then set how many lessons per week each year group is allowed to have.
-Years 1–5 share one limit, Years 8–10 share one limit, and Years 6 and 7 are set separately.
+Then set how many lessons per week each year or profile group is allowed to have.
+Years 1–5 share one limit; Year 6 and Year 7 are separate; Years 8–10 use profile limits (General Stuff 8/10, Spells 8/10, etc.).
 </p>
 
 <div class="notice">
-<strong>Example:</strong> Mathematics could have a limit of 4 lessons for Years 1–5
-and 6 lessons for Years 8–10. Every class in Years 1–5 can have up to 4 Mathematics
-lessons per week, while every class in Years 8–10 can have up to 6.
+<strong>Example:</strong> Potions can be 3 for Years 1–5 and 6 for General Stuff 8/10.
+Every Years 1–5 class can have up to 3 Potions lessons per week, while General Stuff classes in Years 8–10 can have up to 6.
 </div>
 
 <div id="subjectFields"></div>
@@ -181,6 +180,7 @@ Period 6: 17:00–18:30
 <p class="muted">
 Checks whether a teacher is assigned to multiple classes at the same time,
 even if the lessons are different subjects.
+You can mark an exception only when the teacher is teaching exactly two classes in the same year at once.
 </p>
 <button id="checkConflicts">Check for conflicts</button>
 <div id="conflictResults"></div>
@@ -224,7 +224,27 @@ function getWriteToken(){
  }
 }
 
+const SCHEMA_VERSION=8;
+const CLASS_COUNT=47;
 const HOUSES=["Ivrella","Emilora","Johansen","Caspiella","Everett"];
+const PROFILES=[
+ {
+  name:"General Stuff",
+  subjects:["Potions","Spells","Balls","Plants","Ancient Runes"]
+ },
+ {
+  name:"Spells",
+  subjects:["Charms","Spells","Hand Spells","Transfiguration","Defence against the dark arts"]
+ },
+ {
+  name:"Hand Magic",
+  subjects:["Hand Spells","Balls","Defence","Potions","Plants"]
+ },
+ {
+  name:"Important Magic",
+  subjects:["Transfiguration","G Spells","M Defence","Potions","Balls"]
+ }
+];
 
 function makeId(){
  return "id_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,10);
@@ -281,17 +301,38 @@ function makeTeachers(count,featuredName,usedNames){
  return names.map(name=>({id:makeId(),name}));
 }
 
-function makeSubject(name,teachers,defaultLimit){
+function emptyLimits(){
  const limits={};
- for(let year=1;year<=10;year++) limits[year]=defaultLimit;
- return {id:makeId(),name,teachers,limits};
+ for(let year=1;year<=7;year++) limits[year]=0;
+ PROFILES.forEach(p=>{limits[p.name]=0;});
+ return limits;
+}
+
+function makeLimits(y15,y6,y7,subjectName){
+ const limits=emptyLimits();
+ for(let year=1;year<=5;year++) limits[year]=y15;
+ limits[6]=y6;
+ limits[7]=y7;
+ PROFILES.forEach(p=>{
+  limits[p.name]=p.subjects.indexOf(subjectName)>=0?6:0;
+ });
+ return limits;
+}
+
+function makeSubject(name,teachers,y15,y6,y7){
+ return {id:makeId(),name,teachers,limits:makeLimits(y15,y6,y7,name)};
 }
 
 function makeDefaultClasses(){
  const classes=[];
  HOUSES.forEach(house=>{
-  for(let year=1;year<=10;year++){
-   classes.push({name:house+" "+year,year});
+  for(let year=1;year<=7;year++){
+   classes.push({name:house+" "+year,year,profile:""});
+  }
+ });
+ PROFILES.forEach(profile=>{
+  for(let year=8;year<=10;year++){
+   classes.push({name:profile.name+" "+year,year,profile:profile.name});
   }
  });
  return classes;
@@ -302,28 +343,32 @@ function makeDefaultSubjects(){
  const take=(count,featured)=>makeTeachers(count,featured,usedNames);
 
  return [
-  makeSubject("General Knowledge",take(5,"Professor Robertson"),2),
-  makeSubject("Hand Spells",take(10,"Professor Mordie"),2),
-  makeSubject("Balls",take(10,"Professor Hord"),2),
-  makeSubject("Defence",take(15,"Professor Victoire"),2),
-  makeSubject("Plants",take(10,"Professor Savannah"),2),
-  makeSubject("Quader",take(1,"Madam Bell"),2),
-  makeSubject("History of Ovloda",take(5,"Professor William"),2),
-  makeSubject("Potions",take(5,"Professor Joey"),2),
-  makeSubject("Ancient Runes",take(5,"Professor Anna"),2),
-  makeSubject("Wand Theory",take(5,"Professor Sally"),2),
-  makeSubject("Spells",take(3,"Professor Flitter"),2),
-  makeSubject("Defence against the dark arts",take(3,"Professor Rooxsan"),2),
-  makeSubject("Charms",take(3,"Professor Melana"),2),
-  makeSubject("Transfiguration",take(3,"Professor Aliana"),2)
+  makeSubject("General Knowledge",take(5,"Professor Robertson"),2,2,2),
+  makeSubject("Hand Spells",take(10,"Professor Mordie"),4,5,3),
+  makeSubject("Balls",take(10,"Professor Hord"),4,5,3),
+  makeSubject("Defence",take(15,"Professor Victoire"),4,5,3),
+  makeSubject("Plants",take(10,"Professor Savannah"),3,4,3),
+  makeSubject("Quader",take(1,"Madam Bell"),1,0,0),
+  makeSubject("History of Ovloda",take(5,"Professor William"),2,3,1),
+  makeSubject("Potions",take(5,"Professor Joey"),3,4,3),
+  makeSubject("Ancient Runes",take(5,"Professor Anna"),2,2,2),
+  makeSubject("Wand Theory",take(5,"Professor Sally"),0,0,10),
+  makeSubject("Spells",take(3,"Professor Flitter"),0,0,0),
+  makeSubject("Defence against the dark arts",take(3,"Professor Rooxsan"),0,0,0),
+  makeSubject("Charms",take(3,"Professor Melana"),0,0,0),
+  makeSubject("Transfiguration",take(3,"Professor Aliana"),0,0,0),
+  makeSubject("G Spells",take(3,"Professor Galena"),0,0,0),
+  makeSubject("M Defence",take(3,"Professor Morwen"),0,0,0)
  ];
 }
 
 function makeDefaultData(){
  return {
+  schemaVersion:SCHEMA_VERSION,
   classes:makeDefaultClasses(),
   subjects:makeDefaultSubjects(),
-  lessons:{}
+  lessons:{},
+  exceptions:[]
  };
 }
 
@@ -331,51 +376,99 @@ const YEAR_LIMIT_GROUPS=[
  {id:"1-5",label:"Years 1–5",years:[1,2,3,4,5]},
  {id:"6",label:"Year 6",years:[6]},
  {id:"7",label:"Year 7",years:[7]},
- {id:"8-10",label:"Years 8–10",years:[8,9,10]}
+ {id:"general-stuff-8-10",label:"General Stuff 8/10",profile:"General Stuff"},
+ {id:"spells-8-10",label:"Spells 8/10",profile:"Spells"},
+ {id:"hand-magic-8-10",label:"Hand Magic 8/10",profile:"Hand Magic"},
+ {id:"important-magic-8-10",label:"Important Magic 8/10",profile:"Important Magic"}
 ];
 
 function normaliseLimits(limits){
- const result={};
- for(let year=1;year<=10;year++){
+ const result=emptyLimits();
+ for(let year=1;year<=7;year++){
   const n=Number(limits&&limits[year]);
   result[year]=Number.isInteger(n)&&n>=0&&n<=30?n:0;
  }
- // Keep each year-group on one shared value (use the highest so old data stays valid).
- YEAR_LIMIT_GROUPS.forEach(group=>{
-  const value=Math.max(...group.years.map(year=>result[year]||0));
-  group.years.forEach(year=>{result[year]=value;});
+ const value15=Math.max(result[1],result[2],result[3],result[4],result[5]);
+ for(let year=1;year<=5;year++) result[year]=value15;
+
+ PROFILES.forEach(p=>{
+  const n=Number(limits&&limits[p.name]);
+  if(Number.isInteger(n)&&n>=0&&n<=30){
+   result[p.name]=n;
+  }else if(limits&&(limits[8]!=null||limits[9]!=null||limits[10]!=null)){
+   // Old single Years 8–10 value — do not guess per profile; leave 0 unless set above.
+   result[p.name]=0;
+  }else{
+   result[p.name]=0;
+  }
  });
  return result;
 }
 
 function groupLimitValue(limits,group){
+ if(group.profile) return Number(limits&&limits[group.profile]||0);
  return Math.max(...group.years.map(year=>Number(limits&&limits[year]||0)));
 }
 
+function classProfile(c){
+ if(!c) return "";
+ if(c.profile) return c.profile;
+ if(Number(c.year)>=8){
+  const match=PROFILES.find(p=>String(c.name||"").indexOf(p.name)===0);
+  return match?match.name:"";
+ }
+ return "";
+}
+
+function limitForClass(subject,classObj){
+ if(!subject||!classObj) return 0;
+ if(Number(classObj.year)>=8){
+  return Number(subject.limits[classProfile(classObj)]||0);
+ }
+ return Number(subject.limits[classObj.year]||0);
+}
+
+function normaliseClass(c,fallback){
+ if(typeof c==="string"){
+  return {
+   name:c,
+   year:fallback.year,
+   profile:fallback.profile||""
+  };
+ }
+ const year=Math.min(10,Math.max(1,Number(c.year)||fallback.year));
+ const profile=year>=8?(c.profile||fallback.profile||classProfile({name:c.name||fallback.name,year,profile:c.profile})) : "";
+ return {
+  name:c.name||fallback.name,
+  year,
+  profile:profile||""
+ };
+}
+
 function normaliseData(raw){
- const next=raw&&typeof raw==="object"?{
+ if(!raw||typeof raw!=="object"||Number(raw.schemaVersion)!==SCHEMA_VERSION){
+  return makeDefaultData();
+ }
+
+ const next={
+  schemaVersion:SCHEMA_VERSION,
   classes:raw.classes,
   subjects:raw.subjects,
-  lessons:raw.lessons
- }:makeDefaultData();
+  lessons:raw.lessons,
+  exceptions:raw.exceptions
+ };
 
  if(!Array.isArray(next.classes)) next.classes=[];
  const defaultClasses=makeDefaultClasses();
- while(next.classes.length<50){
+ while(next.classes.length<CLASS_COUNT){
   const d=defaultClasses[next.classes.length];
-  next.classes.push({name:d.name,year:d.year});
+  next.classes.push({name:d.name,year:d.year,profile:d.profile});
  }
- next.classes=next.classes.slice(0,50).map((c,i)=>{
-  const fallback=defaultClasses[i];
-  if(typeof c==="string") return {name:c,year:fallback.year};
-  return {
-   name:c.name||fallback.name,
-   year:Math.min(10,Math.max(1,Number(c.year)||fallback.year))
-  };
- });
+ next.classes=next.classes.slice(0,CLASS_COUNT).map((c,i)=>normaliseClass(c,defaultClasses[i]));
 
  if(!Array.isArray(next.subjects)) next.subjects=[];
  if(!next.lessons||typeof next.lessons!=="object"||Array.isArray(next.lessons)) next.lessons={};
+ if(!Array.isArray(next.exceptions)) next.exceptions=[];
 
  if(next.subjects.length===0){
   next.subjects=makeDefaultSubjects();
@@ -390,12 +483,35 @@ function normaliseData(raw){
   limits:normaliseLimits(s.limits)
  }));
 
+ // Ensure new default subjects exist (e.g. G Spells / M Defence).
+ const byName=new Map(next.subjects.map(s=>[String(s.name||"").toLowerCase(),s]));
+ const usedTeacherNames=new Set();
+ next.subjects.forEach(s=>{
+  (s.teachers||[]).forEach(t=>{
+   const n=String(t.name||"").trim().toLowerCase();
+   if(n) usedTeacherNames.add(n);
+  });
+ });
+ [
+  {name:"G Spells",count:3,featured:"Professor Galena"},
+  {name:"M Defence",count:3,featured:"Professor Morwen"}
+ ].forEach(item=>{
+  if(byName.has(item.name.toLowerCase())) return;
+  next.subjects.push(makeSubject(
+   item.name,
+   makeTeachers(item.count,item.featured,usedTeacherNames),
+   0,0,0
+  ));
+ });
+
  Object.keys(next.lessons).forEach(k=>{
   const l=next.lessons[k];
   if(typeof l==="string"||!l||typeof l!=="object"){
    delete next.lessons[k];
   }
  });
+
+ next.exceptions=next.exceptions.filter(e=>typeof e==="string"&&e.indexOf("|")>=0);
 
  return next;
 }
@@ -624,10 +740,7 @@ function getLessonCount(classIndex,subjectId){
 }
 
 function getYearLimit(classIndex,subjectId){
- const subject=subjectById(subjectId);
- if(!subject) return 0;
- const year=data.classes[classIndex].year;
- return Number(subject.limits[year]||0);
+ return limitForClass(subjectById(subjectId),data.classes[classIndex]);
 }
 
 // Navigation
@@ -673,10 +786,14 @@ function renderClassSelector(){
 }
 
 document.getElementById("saveClasses").addEventListener("click",()=>{
- data.classes=data.classes.map((c,i)=>({
-  name:document.getElementById("className"+i).value.trim()||(HOUSES[Math.floor(i/10)]+" "+((i%10)+1)),
-  year:Number(document.getElementById("classYear"+i).value)
- }));
+ const defaults=makeDefaultClasses();
+ data.classes=data.classes.map((c,i)=>{
+  const fallback=defaults[i]||{name:"Class "+(i+1),year:1,profile:""};
+  const name=document.getElementById("className"+i).value.trim()||fallback.name;
+  const year=Number(document.getElementById("classYear"+i).value);
+  const profile=year>=8?(classProfile({name,year,profile:c.profile})||fallback.profile||""):"";
+  return {name,year,profile};
+ });
 
  persist();
  renderClasses();
@@ -735,7 +852,7 @@ function renderSubjects(){
     '<div class="teacher-list">'+teacherRows+'</div>'+
     '<button type="button" class="addTeacher" data-index="'+index+'">+ Add teacher</button>'+
     '<h3>Maximum lessons per class per week</h3>'+
-    '<p class="muted">Set one limit for Years 1–5, separate limits for Year 6 and Year 7, and one limit for Years 8–10. Use 0 if that group must not have this subject.</p>'+
+    '<p class="muted">Set Years 1–5, Year 6, Year 7, then each profile for Years 8–10 (General Stuff 8/10, Spells 8/10, Hand Magic 8/10, Important Magic 8/10). Use 0 if that group must not have this subject.</p>'+
     '<div class="limits-grid">'+limitFields+'</div>'+
     '<div class="actions"><button type="button" class="danger removeSubject" data-index="'+index+'">Remove subject</button></div>'+
    '</div>';
@@ -820,7 +937,7 @@ function collectSubjectInputs(validate){
    });
   }
 
-  const limits={};
+  const limits=emptyLimits();
   for(const group of YEAR_LIMIT_GROUPS){
    const input=document.getElementById("limit_"+i+"_"+group.id);
    const value=input?Number(input.value):groupLimitValue(original.limits,group);
@@ -829,7 +946,8 @@ function collectSubjectInputs(validate){
     if(validate) showMessage("subjectMessage",group.label+" limits must be whole numbers from 0 to 30.","warning");
     return null;
    }
-   group.years.forEach(year=>{limits[year]=value;});
+   if(group.profile) limits[group.profile]=value;
+   else group.years.forEach(year=>{limits[year]=value;});
   }
 
   if(validate&&!subjectName){
@@ -860,18 +978,18 @@ function collectSubjectInputs(validate){
    return null;
   }
 
-  // Existing lesson counts must fit the new year-specific limits.
+  // Existing lesson counts must fit the new year/profile limits.
   for(const subject of proposed){
    for(let ci=0;ci<data.classes.length;ci++){
     const count=getLessonCount(ci,subject.id);
-    const limit=subject.limits[data.classes[ci].year];
+    const limit=limitForClass(subject,data.classes[ci]);
 
     if(count>limit){
      showMessage(
       "subjectMessage",
-      subject.name+" cannot have a limit of "+limit+" for Year "+
-      data.classes[ci].year+": "+data.classes[ci].name+
-      " already has "+count+" scheduled lessons. Remove the extra lessons first.",
+      subject.name+" cannot have a limit of "+limit+" for "+
+      data.classes[ci].name+
+      ": that class already has "+count+" scheduled lessons. Remove the extra lessons first.",
       "warning"
      );
      return null;
@@ -905,7 +1023,7 @@ document.getElementById("addSubject").addEventListener("click",()=>{
   id:makeId(),
   name:"",
   teachers:[],
-  limits:Object.fromEntries(Array.from({length:10},(_,i)=>[i+1,0]))
+  limits:emptyLimits()
  };
  data.subjects.push(newSubject);
  expandedSubjectIds.add(newSubject.id);
@@ -1101,7 +1219,7 @@ function renderEditorMessage(ci,day){
   html+='</div>';
  }
 
- const conflicts=getConflicts().filter(c=>
+ const conflicts=getActiveConflicts().filter(c=>
   c.day===day&&c.entries.some(e=>e.classIndex===ci)
  );
 
@@ -1165,6 +1283,22 @@ function renderOverview(){
 }
 
 // Teacher conflicts
+function conflictKey(conflict){
+ return conflict.teacher.trim().toLowerCase()+"|"+conflict.day+"|"+conflict.period;
+}
+
+function isExceptedConflict(conflict){
+ return (data.exceptions||[]).indexOf(conflictKey(conflict))>=0;
+}
+
+function canMakeException(conflict){
+ const classIndexes=Array.from(new Set(conflict.entries.map(e=>e.classIndex)));
+ if(classIndexes.length!==2) return false;
+ const y0=data.classes[classIndexes[0]]&&data.classes[classIndexes[0]].year;
+ const y1=data.classes[classIndexes[1]]&&data.classes[classIndexes[1]].year;
+ return y0!=null&&y0===y1;
+}
+
 function getConflicts(){
  const map=new Map();
 
@@ -1173,6 +1307,7 @@ function getConflicts(){
   const ci=Number(parts[0]);
   const day=parts[1];
   const period=Number(parts[2]);
+  if(!data.classes[ci]) return;
   const subject=subjectById(lesson.subjectId);
   const teacher=subject&&teacherById(subject,lesson.teacherId);
 
@@ -1192,6 +1327,7 @@ function getConflicts(){
   map.get(collisionKey).entries.push({
    classIndex:ci,
    className:data.classes[ci].name,
+   year:data.classes[ci].year,
    subject:subject.name
   });
  });
@@ -1201,25 +1337,80 @@ function getConflicts(){
  );
 }
 
+function getActiveConflicts(){
+ return getConflicts().filter(c=>!isExceptedConflict(c));
+}
+
 function renderConflicts(){
  const container=document.getElementById("conflictResults");
  const conflicts=getConflicts();
+ const active=conflicts.filter(c=>!isExceptedConflict(c));
+ const excepted=conflicts.filter(c=>isExceptedConflict(c));
 
  if(!conflicts.length){
   container.innerHTML='<div class="success">No teacher conflicts found.</div>';
   return;
  }
 
- container.innerHTML=
-  '<div class="warning"><strong>Found '+conflicts.length+' conflict(s).</strong>'+
-  '<div class="table-wrap"><table><thead><tr><th>Teacher</th><th>Day</th><th>Period</th><th>Classes</th></tr></thead><tbody>'+
-  conflicts.map(c=>
-   '<tr><td>'+esc(c.teacher)+'</td><td>'+esc(c.day)+'</td><td>Period '+c.period+
-   ' ('+PERIODS[c.period-1].start+'–'+PERIODS[c.period-1].end+')</td><td>'+
-   c.entries.map(e=>esc(e.className)+' — '+esc(e.subject)).join("<br>")+
-   '</td></tr>'
-  ).join("")+
-  '</tbody></table></div></div>';
+ function rows(list,mode){
+  return list.map(c=>{
+   const key=conflictKey(c);
+   let action="";
+   if(mode==="active"&&canMakeException(c)){
+    action='<button type="button" class="secondary exception-btn" data-key="'+esc(key)+'">Exception</button>';
+   }else if(mode==="active"&&!canMakeException(c)){
+    action='<span class="muted">No exception (need exactly 2 classes in the same year)</span>';
+   }else if(mode==="excepted"){
+    action='<button type="button" class="danger remove-exception-btn" data-key="'+esc(key)+'">Remove exception</button>';
+   }
+   return '<tr><td>'+esc(c.teacher)+'</td><td>'+esc(c.day)+'</td><td>Period '+c.period+
+    ' ('+PERIODS[c.period-1].start+'–'+PERIODS[c.period-1].end+')</td><td>'+
+    c.entries.map(e=>esc(e.className)+' — '+esc(e.subject)).join("<br>")+
+    '</td><td>'+action+'</td></tr>';
+  }).join("");
+ }
+
+ let html="";
+ if(active.length){
+  html+=
+   '<div class="warning"><strong>Found '+active.length+' conflict(s).</strong>'+
+   '<div class="table-wrap"><table><thead><tr><th>Teacher</th><th>Day</th><th>Period</th><th>Classes</th><th>Action</th></tr></thead><tbody>'+
+   rows(active,"active")+
+   '</tbody></table></div></div>';
+ }else{
+  html+='<div class="success">No active teacher conflicts.</div>';
+ }
+
+ if(excepted.length){
+  html+=
+   '<div class="notice" style="margin-top:14px"><strong>'+excepted.length+' excepted overlap(s).</strong>'+
+   '<div class="table-wrap"><table><thead><tr><th>Teacher</th><th>Day</th><th>Period</th><th>Classes</th><th>Action</th></tr></thead><tbody>'+
+   rows(excepted,"excepted")+
+   '</tbody></table></div></div>';
+ }
+
+ container.innerHTML=html;
+
+ container.querySelectorAll(".exception-btn").forEach(button=>{
+  button.addEventListener("click",()=>{
+   const key=button.dataset.key;
+   if(!data.exceptions) data.exceptions=[];
+   if(data.exceptions.indexOf(key)<0) data.exceptions.push(key);
+   persist();
+   renderConflicts();
+   renderEditor();
+  });
+ });
+
+ container.querySelectorAll(".remove-exception-btn").forEach(button=>{
+  button.addEventListener("click",()=>{
+   const key=button.dataset.key;
+   data.exceptions=(data.exceptions||[]).filter(e=>e!==key);
+   persist();
+   renderConflicts();
+   renderEditor();
+  });
+ });
 }
 
 document.getElementById("checkConflicts").addEventListener("click",renderConflicts);
@@ -1252,7 +1443,7 @@ function connectSharedDatabase(){
  loadSharedData().then(function(result){
   const raw=result.raw;
   const normalised=normaliseData(raw);
-  const needsSeed=!raw||!Array.isArray(raw.classes)||raw.classes.length===0||!Array.isArray(raw.subjects)||raw.subjects.length===0;
+  const needsSeed=!raw||!Array.isArray(raw.classes)||raw.classes.length===0||!Array.isArray(raw.subjects)||raw.subjects.length===0||Number(raw.schemaVersion)!==SCHEMA_VERSION;
   data=normalised;
   lastRemoteText=result.text||JSON.stringify(raw||{});
   lastUpdatedAt=result.updatedAt||"";
@@ -1269,12 +1460,13 @@ function connectSharedDatabase(){
    ensureWriteToken().then(function(ok){
     if(!ok) return;
     writing=true;
-    setSyncStatus("Creating first shared timetable…");
+    setSyncStatus(Number(raw&&raw.schemaVersion)!==SCHEMA_VERSION?"Updating shared timetable to the new class/profile layout…":"Creating first shared timetable…");
     saveSharedData(normalised).then(function(saved){
      lastRemoteText=saved.text;
      lastUpdatedAt=saved.updatedAt||lastUpdatedAt;
      writing=false;
      setSyncStatus("Shared timetable ready · "+new Date().toLocaleTimeString());
+     refreshUiFromData();
     }).catch(function(err){
      writing=false;
      setSyncStatus("Could not create shared timetable"+(err&&err.message?": "+err.message:""));
