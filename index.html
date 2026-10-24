@@ -245,7 +245,8 @@ function getWriteToken(){
  }
 }
 
-const SCHEMA_VERSION=15;
+const SCHEMA_VERSION=16;
+const LOCAL_BACKUP_KEY="schoolTimetableLocalBackupV1";
 const PASS_AVERAGE=4;
 const GRADE_SCALE=[
  {value:1,label:"Dreadful"},
@@ -1036,13 +1037,61 @@ function refreshUiFromData(){
  renderEditor();
 }
 
+function lessonCountOf(payload){
+ if(!payload||!payload.lessons||typeof payload.lessons!=="object") return 0;
+ return Object.keys(payload.lessons).length;
+}
+
+function readLocalBackup(){
+ try{
+  const raw=localStorage.getItem(LOCAL_BACKUP_KEY);
+  if(!raw) return null;
+  const parsed=JSON.parse(raw);
+  return parsed&&typeof parsed==="object"?parsed:null;
+ }catch(e){
+  return null;
+ }
+}
+
+function writeLocalBackup(payload){
+ try{
+  localStorage.setItem(LOCAL_BACKUP_KEY,JSON.stringify(payload));
+ }catch(e){}
+}
+
+function preferRicherData(primary,secondary){
+ const a=normaliseData(primary||{});
+ const b=secondary?normaliseData(secondary):null;
+ if(!b) return a;
+ const aLessons=lessonCountOf(a);
+ const bLessons=lessonCountOf(b);
+ const aStudents=(a.students||[]).length;
+ const bStudents=(b.students||[]).length;
+ const aTests=(a.tests||[]).length;
+ const bTests=(b.tests||[]).length;
+ // Prefer the copy that still has timetable/score work if the other was wiped.
+ if(bLessons>aLessons) return b;
+ if(bLessons<aLessons) return a;
+ if(bTests>aTests) return b;
+ if(bTests<aTests) return a;
+ if(bStudents>aStudents) return b;
+ return a;
+}
+
 function applyRemoteData(raw,meta){
  if(writing) return false;
  const remoteText=JSON.stringify(raw||{});
  if(remoteText===lastRemoteText) return false;
+ // Do not let an empty remote wipe richer local work mid-session.
+ const incoming=normaliseData(raw);
+ if(lessonCountOf(incoming)===0&&lessonCountOf(data)>0){
+  setSyncStatus("Ignored empty remote timetable — keeping local lessons.");
+  return false;
+ }
  lastRemoteText=remoteText;
  if(meta&&meta.updatedAt) lastUpdatedAt=meta.updatedAt;
- data=normaliseData(raw);
+ data=incoming;
+ writeLocalBackup(data);
  refreshUiFromData();
  setSyncStatus("Updated from shared timetable"+(lastUpdatedAt?" · "+new Date(lastUpdatedAt).toLocaleTimeString():""));
  return true;
@@ -1141,16 +1190,16 @@ function ensureWriteToken(){
  return Promise.resolve(!!getWriteToken());
 }
 
-function persist(){
+function persist(immediate){
  clearTimeout(persistTimer);
- persistTimer=setTimeout(function(){
+ const runSave=function(){
   const payload=JSON.parse(JSON.stringify(data));
+  writeLocalBackup(payload);
   const generation=++saveGeneration;
   setSyncStatus("Saving shared timetable…");
   ensureWriteToken().then(function(ok){
    if(!ok){
-    setSyncStatus("Not saved — missing GitHub gist token on this laptop.");
-    alert("Could not save to the shared timetable because no GitHub gist token is set on this laptop.");
+    setSyncStatus("Saved on this laptop only — missing GitHub gist token for shared save.");
     return;
    }
    writing=true;
@@ -1165,12 +1214,27 @@ function persist(){
    }).catch(function(err){
     if(generation!==saveGeneration) return;
     writing=false;
-    setSyncStatus("Save failed.");
-    alert("Could not save the shared timetable. "+(err&&err.message?err.message:""));
+    setSyncStatus("Save failed — kept a local backup on this laptop.");
+    alert("Could not save the shared timetable. "+(err&&err.message?err.message:"")+"\n\nA local backup was kept on this laptop.");
    });
   });
- },400);
+ };
+ if(immediate) runSave();
+ else persistTimer=setTimeout(runSave,400);
 }
+
+window.addEventListener("beforeunload",function(){
+ if(persistTimer){
+  clearTimeout(persistTimer);
+  persistTimer=null;
+  try{
+   writeLocalBackup(data);
+  }catch(e){}
+ }
+});
+document.addEventListener("visibilitychange",function(){
+ if(document.hidden) persist(true);
+});
 
 function pullSharedData(manual){
  if(writing){
@@ -2342,7 +2406,7 @@ function renderEditorMessage(ci){
  })).filter(s=>s.limit>0||s.count>0);
 
  let html='<div class="success">Showing '+esc(classObj.name)+
-  ' (Year '+classObj.year+') for the whole week. Changes save automatically.</div>';
+  ' (Year '+classObj.year+') for the whole week. Wait for “Saved to shared timetable” in the top bar before closing or hard-refreshing.</div>';
 
  if(counts.length){
   html+='<div class="notice"><strong>Weekly lesson counts:</strong><br>'+
@@ -2429,16 +2493,21 @@ function connectSharedDatabase(){
  setSyncStatus("Loading shared timetable…");
  loadSharedData().then(function(result){
   const raw=result.raw;
-  const normalised=normaliseData(raw);
+  const backup=readLocalBackup();
+  const normalised=preferRicherData(raw,backup);
   const emptySchool=!raw||!Array.isArray(raw.classes)||raw.classes.length===0||!Array.isArray(raw.subjects)||raw.subjects.length===0;
   const schemaChanged=Number(raw&&raw.schemaVersion)!==SCHEMA_VERSION;
-  // Save after first setup, or after a version bump that migrated data in place (no wipe).
-  const needsSeed=emptySchool||schemaChanged;
+  const restoredFromBackup=lessonCountOf(normalised)>lessonCountOf(normaliseData(raw||{}))||
+   ((normalised.tests||[]).length>(((raw&&raw.tests)||[]).length));
+  // Save after first setup, version bump, or when recovering richer local backup.
+  const needsSeed=emptySchool||schemaChanged||restoredFromBackup;
   data=normalised;
+  writeLocalBackup(data);
   lastRemoteText=result.text||JSON.stringify(raw||{});
   lastUpdatedAt=result.updatedAt||"";
   startUi();
   setSyncStatus(
+   (restoredFromBackup?"Restored local backup · ":"")+
    (getWriteToken()?"Ready to sync":"Viewing shared data — paste gist token on this laptop to save")+
    (lastUpdatedAt?" · "+new Date(lastUpdatedAt).toLocaleTimeString():"")
   );
@@ -2448,9 +2517,18 @@ function connectSharedDatabase(){
   });
   if(needsSeed){
    ensureWriteToken().then(function(ok){
-    if(!ok) return;
+    if(!ok){
+     if(restoredFromBackup){
+      setSyncStatus("Restored on this laptop only — add gist token to put it back on the shared timetable.");
+     }
+     return;
+    }
     writing=true;
-    setSyncStatus(emptySchool?"Creating first shared school data…":"Saving updated app version (your data is kept)…");
+    setSyncStatus(
+     emptySchool?"Creating first shared school data…":
+     restoredFromBackup?"Restoring backup to shared timetable…":
+     "Saving updated app version (your data is kept)…"
+    );
     saveSharedData(normalised).then(function(saved){
      lastRemoteText=saved.text;
      lastUpdatedAt=saved.updatedAt||lastUpdatedAt;
@@ -2464,6 +2542,14 @@ function connectSharedDatabase(){
    });
   }
  }).catch(function(err){
+  const backup=readLocalBackup();
+  if(backup){
+   data=normaliseData(backup);
+   writeLocalBackup(data);
+   startUi();
+   setSyncStatus("Offline/local backup loaded — shared timetable could not be reached.");
+   return;
+  }
   showLoadingError("Could not load the shared timetable: "+(err&&err.message?err.message:String(err)));
  });
 }
