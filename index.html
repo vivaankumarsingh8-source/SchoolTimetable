@@ -28,7 +28,7 @@ main{max-width:1600px;margin:22px auto;padding:0 14px}
 .day-board{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}
 .day-board th,.day-board td{padding:6px;border:1px solid #dce2ec;vertical-align:top}
 .day-board th{background:#eaf0ff;font-size:12px;white-space:nowrap}
-.day-board .class-name{font-weight:bold;white-space:nowrap;position:sticky;left:0;background:#fff;z-index:1;min-width:120px}
+.day-board .class-name,.day-board .period-label{font-weight:bold;white-space:nowrap;position:sticky;left:0;background:#fff;z-index:1;min-width:120px}
 .day-board .cell-stack{display:flex;flex-direction:column;gap:4px;min-width:130px}
 .day-board select{width:100%;padding:5px;font-size:12px}
 .panel{display:none;background:white;border-radius:12px;padding:22px;margin-bottom:20px;box-shadow:0 3px 12px #0000000b}
@@ -186,33 +186,18 @@ A teacher can only teach two classes at the same time if those classes are in th
 
 <div class="grid">
 <div>
-<label for="selectedYearGroup">Year group</label>
-<select id="selectedYearGroup">
-<option value="1-5">Years 1–5 (all classes)</option>
-<option value="6">Year 6 (all classes)</option>
-<option value="7">Year 7 (all classes)</option>
-<option value="8-10">Years 8–10 (all profiles)</option>
-</select>
-</div>
-<div>
-<label for="selectedDay">Day</label>
-<select id="selectedDay">
-<option>Monday</option>
-<option>Tuesday</option>
-<option>Wednesday</option>
-<option>Thursday</option>
-<option>Friday</option>
-</select>
+<label for="selectedClass">Class</label>
+<select id="selectedClass"></select>
 </div>
 </div>
 
-<p class="muted" style="margin-top:12px">All classes in the chosen year group are shown for that day. Edit any period cell directly.</p>
+<p class="muted" style="margin-top:12px">One class at a time, with Monday–Friday shown together. Edit any period cell directly.</p>
 
 <div class="table-wrap" id="periodEditor"></div>
 <div id="editorMessage"></div>
 
 <div class="actions">
-<button id="clearDay" class="danger">Clear this day for all shown classes</button>
+<button id="clearWeek" class="danger">Clear this class’s whole week</button>
 <button id="showOverview" class="secondary">View all scheduled lessons</button>
 </div>
 
@@ -1228,24 +1213,21 @@ function showMessage(id,message,type){
   :"";
 }
 
-const EDITOR_YEAR_GROUPS={
- "1-5":{label:"Years 1–5",match:c=>Number(c.year)>=1&&Number(c.year)<=5},
- "6":{label:"Year 6",match:c=>Number(c.year)===6},
- "7":{label:"Year 7",match:c=>Number(c.year)===7},
- "8-10":{label:"Years 8–10",match:c=>Number(c.year)>=8&&Number(c.year)<=10}
-};
-
-function currentYearGroupId(){
- const select=document.getElementById("selectedYearGroup");
- const id=select&&select.value;
- return EDITOR_YEAR_GROUPS[id]?id:"1-5";
+function currentClassIndex(){
+ const select=document.getElementById("selectedClass");
+ const value=Number(select&&select.value);
+ if(!Number.isInteger(value)||value<0||value>=data.classes.length) return 0;
+ return value;
 }
 
-function classesInCurrentYearGroup(){
- const group=EDITOR_YEAR_GROUPS[currentYearGroupId()];
- return data.classes
-  .map((c,index)=>({c,index}))
-  .filter(item=>group.match(item.c));
+function renderClassSelector(){
+ const select=document.getElementById("selectedClass");
+ if(!select) return;
+ const previous=select.value;
+ select.innerHTML=data.classes.map((c,i)=>
+  '<option value="'+i+'">'+esc(c.name)+' (Year '+c.year+')</option>'
+ ).join("");
+ if(previous!==""&&Number(previous)<data.classes.length) select.value=previous;
 }
 
 function getLessonCount(classIndex,subjectId){
@@ -2173,7 +2155,7 @@ document.getElementById("saveSubjects").addEventListener("click",()=>{
  showMessage("subjectMessage","Subjects, teacher lists and year limits saved successfully. Teachers adjusted to at least 1 per 25 weekly lessons.","success");
 });
 
-// Timetable editor — one day, all classes in a year group
+// Timetable editor — one class, all five days
 function fillTeacherSelect(teacherSelect,subjectId,selectedTeacherId){
  teacherSelect.innerHTML='<option value="">— Teacher —</option>';
  const subject=subjectById(subjectId);
@@ -2238,14 +2220,15 @@ function trySaveLesson(ci,day,periodNumber,subjectId,teacherId){
 }
 
 function renderEditor(){
- const day=document.getElementById("selectedDay").value;
+ renderClassSelector();
+ const ci=currentClassIndex();
+ const classObj=data.classes[ci];
  const container=document.getElementById("periodEditor");
- const classItems=classesInCurrentYearGroup();
  container.innerHTML="";
 
- if(!classItems.length){
-  container.innerHTML='<p class="empty">No classes in this year group.</p>';
-  renderEditorMessage(day,[]);
+ if(!classObj){
+  container.innerHTML='<p class="empty">No class selected.</p>';
+  document.getElementById("editorMessage").innerHTML="";
   return;
  }
 
@@ -2253,21 +2236,30 @@ function renderEditor(){
  table.className="day-board";
 
  const thead=document.createElement("thead");
- thead.innerHTML='<tr><th class="class-name">Class</th>'+
-  PERIODS.map(p=>'<th>P'+p.number+'<br><small>'+p.start+'–'+p.end+'</small></th>').join("")+
+ thead.innerHTML='<tr><th class="period-label">Period</th>'+
+  DAYS.map(day=>'<th>'+esc(day)+'</th>').join("")+
   '</tr>';
  table.appendChild(thead);
 
  const tbody=document.createElement("tbody");
 
- classItems.forEach(({c,index:ci})=>{
-  const tr=document.createElement("tr");
-  const nameCell=document.createElement("td");
-  nameCell.className="class-name";
-  nameCell.innerHTML=esc(c.name)+'<br><small style="font-weight:normal;color:#667085">Year '+c.year+'</small>';
-  tr.appendChild(nameCell);
+ PERIODS.forEach(period=>{
+  if(period.number===3){
+   const lunchRow=document.createElement("tr");
+   lunchRow.innerHTML=
+    '<td class="period-label">Lunch</td>'+
+    '<td colspan="'+DAYS.length+'"><div class="lunch" style="margin:0">🍽 11:30–12:30</div></td>';
+   tbody.appendChild(lunchRow);
+  }
 
-  PERIODS.forEach(period=>{
+  const tr=document.createElement("tr");
+  const label=document.createElement("td");
+  label.className="period-label";
+  label.innerHTML="Period "+period.number+
+   '<br><small style="font-weight:normal;color:#667085">'+period.start+"–"+period.end+"</small>";
+  tr.appendChild(label);
+
+  DAYS.forEach(day=>{
    const td=document.createElement("td");
    const stack=document.createElement("div");
    stack.className="cell-stack";
@@ -2276,7 +2268,7 @@ function renderEditor(){
    const existing=data.lessons[k]||{subjectId:"",teacherId:""};
 
    const subjectSelect=document.createElement("select");
-   subjectSelect.setAttribute("aria-label",c.name+" period "+period.number+" subject");
+   subjectSelect.setAttribute("aria-label",classObj.name+" "+day+" period "+period.number+" subject");
    subjectSelect.innerHTML='<option value="">— Free —</option>';
 
    data.subjects.forEach(subject=>{
@@ -2292,7 +2284,7 @@ function renderEditor(){
    subjectSelect.value=existing.subjectId||"";
 
    const teacherSelect=document.createElement("select");
-   teacherSelect.setAttribute("aria-label",c.name+" period "+period.number+" teacher");
+   teacherSelect.setAttribute("aria-label",classObj.name+" "+day+" period "+period.number+" teacher");
    fillTeacherSelect(teacherSelect,existing.subjectId,existing.teacherId);
 
    function applySave(subjectId,teacherId){
@@ -2337,31 +2329,38 @@ function renderEditor(){
 
  table.appendChild(tbody);
  container.appendChild(table);
- renderEditorMessage(day,classItems);
+ renderEditorMessage(ci);
 }
 
-function renderEditorMessage(day,classItems){
- const group=EDITOR_YEAR_GROUPS[currentYearGroupId()];
- let html='<div class="success">Showing '+classItems.length+' classes for '+
-  esc(group.label)+' on '+esc(day)+'. Changes save automatically.</div>';
+function renderEditorMessage(ci){
+ const classObj=data.classes[ci];
+ const counts=data.subjects.map(subject=>({
+  name:subject.name,
+  count:getLessonCount(ci,subject.id),
+  limit:getYearLimit(ci,subject.id)
+ })).filter(s=>s.limit>0||s.count>0);
 
- html+='<div class="lunch">🍽 Lunch break · 11:30–12:30 (between Period 2 and Period 3)</div>';
+ let html='<div class="success">Showing '+esc(classObj.name)+
+  ' (Year '+classObj.year+') for the whole week. Changes save automatically.</div>';
+
+ if(counts.length){
+  html+='<div class="notice"><strong>Weekly lesson counts:</strong><br>'+
+   counts.map(s=>esc(s.name)+": "+s.count+"/"+s.limit).join("<br>")+
+   '</div>';
+ }
 
  document.getElementById("editorMessage").innerHTML=html;
 }
 
-document.getElementById("selectedYearGroup").addEventListener("change",renderEditor);
-document.getElementById("selectedDay").addEventListener("change",renderEditor);
+document.getElementById("selectedClass").addEventListener("change",renderEditor);
 
-document.getElementById("clearDay").addEventListener("click",()=>{
- const day=document.getElementById("selectedDay").value;
- const classItems=classesInCurrentYearGroup();
- const group=EDITOR_YEAR_GROUPS[currentYearGroupId()];
+document.getElementById("clearWeek").addEventListener("click",()=>{
+ const ci=currentClassIndex();
+ const classObj=data.classes[ci];
+ if(!classObj) return;
+ if(!confirm("Clear every lesson for "+classObj.name+" for the whole week?")) return;
 
- if(!classItems.length) return;
- if(!confirm("Clear every lesson for all "+group.label+" classes on "+day+"?")) return;
-
- classItems.forEach(({index:ci})=>{
+ DAYS.forEach(day=>{
   PERIODS.forEach(p=>delete data.lessons[key(ci,day,p.number)]);
  });
  persist();
