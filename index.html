@@ -121,7 +121,7 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 
 <section id="students" class="panel">
 <h2>Students and scores</h2>
-<p class="muted">Search for a student, browse by class, or add a test (out of 10) for a subject and year. Every first name and every surname is unique across the whole school.</p>
+<p class="muted">Students show as Name Surname (House). Grades are Dreadful (1) to Outstanding (6); students need an average of at least 4 to pass. Every first name and surname is unique.</p>
 <div class="grid">
 <div>
 <label for="studentSearch">Search student</label>
@@ -138,6 +138,7 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 </div>
 <div id="studentSearchResults"></div>
 <div id="addTestPanel" style="display:none"></div>
+<div id="averagesBoard"></div>
 <div id="studentList" class="student-list"></div>
 <div id="studentDetail"></div>
 <div id="promotionPanel" style="display:none"></div>
@@ -259,7 +260,16 @@ function getWriteToken(){
  }
 }
 
-const SCHEMA_VERSION=13;
+const SCHEMA_VERSION=14;
+const PASS_AVERAGE=4;
+const GRADE_SCALE=[
+ {value:1,label:"Dreadful"},
+ {value:2,label:"Terrible"},
+ {value:3,label:"Poor"},
+ {value:4,label:"Acceptable"},
+ {value:5,label:"Exceeds Expectations"},
+ {value:6,label:"Outstanding"}
+];
 const CLASS_COUNT=47;
 const LESSONS_PER_TEACHER=25;
 const HOUSES=["Ivrella","Emilora","Johansen","Caspiella","Everett"];
@@ -682,11 +692,77 @@ function makeDefaultStudents(classes){
     usedFullNames,usedFirstNames,usedSurnames,firstNameQueue,surnameQueue
    ));
   }
+  const houseFromClass=houseFromClassName(c.name);
   names.slice(0,capacity).forEach(name=>{
-   students.push({id:makeId(),name,classIndex,scores:{}});
+   students.push({
+    id:makeId(),
+    name,
+    classIndex,
+    house:houseFromClass||"",
+    scores:{}
+   });
   });
  });
+
+ // Years 8–10: exactly 10 students per house in each year.
+ for(let year=8;year<=10;year++){
+  const yearStudents=students.filter(s=>Number(classes[s.classIndex].year)===year);
+  const houseSlots=HOUSES.reduce((list,house)=>{
+   for(let i=0;i<10;i++) list.push(house);
+   return list;
+  },[]);
+  shuffleInPlace(houseSlots);
+  yearStudents.forEach((student,i)=>{
+   student.house=houseSlots[i]||HOUSES[i%HOUSES.length];
+  });
+ }
+
  return students;
+}
+
+function houseFromClassName(name){
+ const raw=String(name||"");
+ return HOUSES.find(house=>raw.indexOf(house+" ")===0||raw===house)||"";
+}
+
+function studentHouse(student,classes){
+ if(student&&student.house&&HOUSES.indexOf(student.house)>=0) return student.house;
+ const c=classes&&student?classes[student.classIndex]:null;
+ return c?houseFromClassName(c.name):"";
+}
+
+function formatStudentLabel(student,classes){
+ const house=studentHouse(student,classes||data.classes);
+ return String(student&&student.name||"Student")+(house?" ("+house+")":"");
+}
+
+function gradeLabel(value){
+ const found=GRADE_SCALE.find(g=>g.value===Number(value));
+ return found?found.label+" ("+found.value+")":"";
+}
+
+function gradeSelectHtml(className,attrs,selectedValue){
+ let html='<select class="'+className+'" '+attrs+'>'+
+  '<option value="">— Grade —</option>';
+ GRADE_SCALE.forEach(g=>{
+  html+='<option value="'+g.value+'" '+(Number(selectedValue)===g.value?"selected":"")+'>'+
+   esc(g.label)+' ('+g.value+')</option>';
+ });
+ return html+'</select>';
+}
+
+function studentAverage(student){
+ const values=Object.values((student&&student.scores)||{})
+  .map(Number)
+  .filter(n=>Number.isFinite(n)&&n>=1&&n<=6);
+ if(!values.length) return null;
+ const sum=values.reduce((a,b)=>a+b,0);
+ return sum/values.length;
+}
+
+function formatAverage(avg){
+ if(avg==null||!Number.isFinite(avg)) return "—";
+ return (Math.round(avg*100)/100).toFixed(2);
 }
 
 function classIndexByName(classes,name){
@@ -706,7 +782,7 @@ function year8ClassOptions(classes){
  }).filter(item=>item.index>=0);
 }
 
-function normaliseStudent(s,classCount,validTestIds){
+function normaliseStudent(s,classCount,classes,validTestIds){
  if(!s||typeof s!=="object") return null;
  const classIndex=Number(s.classIndex);
  if(!Number.isInteger(classIndex)||classIndex<0||classIndex>=classCount) return null;
@@ -717,13 +793,18 @@ function normaliseStudent(s,classCount,validTestIds){
    const raw=s.scores[testId];
    if(raw===""||raw==null) return;
    const n=Number(raw);
-   if(Number.isFinite(n)&&n>=0&&n<=10) scores[testId]=n;
+   if(Number.isInteger(n)&&n>=1&&n<=6) scores[testId]=n;
   });
+ }
+ let house=String(s.house||"").trim();
+ if(HOUSES.indexOf(house)<0){
+  house=houseFromClassName(classes&&classes[classIndex]?classes[classIndex].name:"");
  }
  return {
   id:s.id||makeId(),
   name:String(s.name||"").trim()||"Student",
   classIndex,
+  house:house||HOUSES[0],
   scores
  };
 }
@@ -915,8 +996,23 @@ function normaliseData(raw){
  const validTestIds=new Set(next.tests.map(t=>t.id));
 
  next.students=next.students
-  .map(s=>normaliseStudent(s,next.classes.length,validTestIds))
+  .map(s=>normaliseStudent(s,next.classes.length,next.classes,validTestIds))
   .filter(Boolean);
+
+ // Ensure years 8–10 have 10 students per house.
+ for(let year=8;year<=10;year++){
+  const yearStudents=next.students.filter(s=>Number(next.classes[s.classIndex].year)===year);
+  if(yearStudents.length!==50) continue;
+  const counts=HOUSES.reduce((map,h)=>{map[h]=0;return map;},{});
+  yearStudents.forEach(s=>{if(counts[s.house]!=null) counts[s.house]++;});
+  const balanced=HOUSES.every(h=>counts[h]===10);
+  if(balanced) continue;
+  const houseSlots=HOUSES.reduce((list,house)=>{
+   for(let i=0;i<10;i++) list.push(house);
+   return list;
+  },[]);
+  yearStudents.forEach((student,i)=>{student.house=houseSlots[i];});
+ }
 
  return next;
 }
@@ -1323,8 +1419,13 @@ function renderStudentSearchResults(){
   '<div class="student-list" style="margin-top:10px">'+
   matches.map(s=>{
    const c=data.classes[s.classIndex];
+   const avg=studentAverage(s);
    return '<button type="button" class="student-chip search-hit" data-id="'+esc(s.id)+'">'+
-    esc(s.name)+'<small>'+esc(c?c.name:"Unknown class")+'</small></button>';
+    esc(formatStudentLabel(s))+
+    '<small>'+esc(c?c.name:"Unknown class")+
+    (avg==null?"":" · avg "+formatAverage(avg))+
+    (avg!=null&&avg<PASS_AVERAGE?" · failed":"")+
+    '</small></button>';
   }).join("")+
   '</div></div>';
 
@@ -1358,7 +1459,7 @@ function renderAddTestPanel(){
  panel.innerHTML=
   '<div class="notice" style="margin-top:14px">'+
    '<h3 style="margin-top:0">Add test</h3>'+
-   '<p class="muted">Choose the subject and year. Then enter a score out of 10 for each student in that year who takes the subject.</p>'+
+   '<p class="muted">Choose the subject and year. Then give each student a grade from Dreadful (1) to Outstanding (6). Pass average is 4.</p>'+
    '<div class="grid">'+
     '<div><label for="testSubject">Subject</label><select id="testSubject">'+
      '<option value="">— Choose subject —</option>'+
@@ -1409,14 +1510,14 @@ function renderAddTestPanel(){
 
   const entry=document.getElementById("testScoreEntry");
   entry.innerHTML=
-   '<h3>'+esc(title||(subject.name+" test"))+' · Year '+year+' · out of 10</h3>'+
-   '<p class="muted">'+eligible.length+' students</p>'+
-   '<div class="table-wrap"><table><thead><tr><th>Student</th><th>Class</th><th>Score / 10</th></tr></thead><tbody>'+
+   '<h3>'+esc(title||(subject.name+" test"))+' · Year '+year+'</h3>'+
+   '<p class="muted">'+eligible.length+' students · grades 1–6</p>'+
+   '<div class="table-wrap"><table><thead><tr><th>Student</th><th>Class</th><th>Grade</th></tr></thead><tbody>'+
    eligible.map(s=>{
     const c=data.classes[s.classIndex];
-    return '<tr><td>'+esc(s.name)+'</td><td>'+esc(c?c.name:"")+'</td><td>'+
-     '<input class="test-score-input" data-id="'+esc(s.id)+
-     '" type="number" min="0" max="10" step="0.5" placeholder="0–10" style="max-width:110px"></td></tr>';
+    return '<tr><td>'+esc(formatStudentLabel(s))+'</td><td>'+esc(c?c.name:"")+'</td><td>'+
+     gradeSelectHtml("test-score-input",'data-id="'+esc(s.id)+'"', "")+
+     '</td></tr>';
    }).join("")+
    '</tbody></table></div>'+
    '<div class="actions">'+
@@ -1430,8 +1531,8 @@ function renderAddTestPanel(){
     const raw=input?input.value.trim():"";
     if(raw==="") continue;
     const n=Number(raw);
-    if(!Number.isFinite(n)||n<0||n>10){
-     showMessage("studentMessage","Scores must be numbers from 0 to 10.","warning");
+    if(!Number.isInteger(n)||n<1||n>6){
+     showMessage("studentMessage","Choose a grade from Dreadful (1) to Outstanding (6).","warning");
      return;
     }
     scoresByStudent[student.id]=n;
@@ -1461,9 +1562,59 @@ function renderAddTestPanel(){
  });
 }
 
+function renderAveragesBoard(){
+ const board=document.getElementById("averagesBoard");
+ if(!board) return;
+
+ const ranked=(data.students||[])
+  .map(s=>({student:s,avg:studentAverage(s)}))
+  .filter(item=>item.avg!=null)
+  .sort((a,b)=>b.avg-a.avg);
+
+ if(!ranked.length){
+  board.innerHTML=
+   '<div class="notice" style="margin-top:14px"><strong>Averages</strong>'+
+   '<p class="muted">No graded tests yet. Add a test to build averages. Pass mark: average ≥ 4.</p></div>';
+  return;
+ }
+
+ const highest=ranked.slice(0,10);
+ const lowest=ranked.slice().reverse().slice(0,10);
+ const failed=ranked.filter(item=>item.avg<PASS_AVERAGE).sort((a,b)=>a.avg-b.avg);
+
+ function rows(list){
+  return list.map((item,i)=>
+   '<tr><td>'+(i+1)+'</td><td>'+esc(formatStudentLabel(item.student))+
+   '</td><td>'+formatAverage(item.avg)+
+   (item.avg<PASS_AVERAGE?' <span style="color:#8b1722">(failed)</span>':'')+
+   '</td></tr>'
+  ).join("");
+ }
+
+ board.innerHTML=
+  '<div class="notice" style="margin-top:14px">'+
+   '<strong>Averages</strong> · pass mark '+PASS_AVERAGE+
+   ' · '+failed.length+' failed · '+ranked.length+' students with scores'+
+   '<div class="grid" style="margin-top:12px">'+
+    '<div><h3 style="margin:0 0 8px">Highest averages</h3>'+
+     '<div class="table-wrap"><table><thead><tr><th>#</th><th>Student</th><th>Avg</th></tr></thead><tbody>'+
+     rows(highest)+'</tbody></table></div></div>'+
+    '<div><h3 style="margin:0 0 8px">Lowest averages</h3>'+
+     '<div class="table-wrap"><table><thead><tr><th>#</th><th>Student</th><th>Avg</th></tr></thead><tbody>'+
+     rows(lowest)+'</tbody></table></div></div>'+
+   '</div>'+
+   (failed.length
+    ?('<h3 style="margin-top:16px">Failed (average below '+PASS_AVERAGE+')</h3>'+
+      '<div class="table-wrap"><table><thead><tr><th>#</th><th>Student</th><th>Avg</th></tr></thead><tbody>'+
+      rows(failed)+'</tbody></table></div>')
+    :'<p class="success" style="margin-top:12px">No students are currently failing.</p>')+
+  '</div>';
+}
+
 function renderStudents(){
  renderStudentClassFilter();
  renderStudentSearchResults();
+ renderAveragesBoard();
  const filter=document.getElementById("studentClassFilter");
  const classIndex=Number(filter&&filter.value||0);
  const list=document.getElementById("studentList");
@@ -1478,13 +1629,15 @@ function renderStudents(){
  if(!students.length){
   list.innerHTML='<p class="empty">No students in this class.</p>';
  }else{
-  list.innerHTML=students.map(s=>
-   '<button type="button" class="student-chip'+(s.id===selectedStudentId?" active":"")+
-   '" data-id="'+esc(s.id)+'">'+esc(s.name)+
-   '<small>'+(Object.keys(s.scores||{}).length
-    ?(Object.keys(s.scores).length+" test score"+(Object.keys(s.scores).length===1?"":"s"))
-    :"No scores yet")+'</small></button>'
-  ).join("");
+  list.innerHTML=students.map(s=>{
+   const avg=studentAverage(s);
+   return '<button type="button" class="student-chip'+(s.id===selectedStudentId?" active":"")+
+    '" data-id="'+esc(s.id)+'">'+esc(formatStudentLabel(s))+
+    '<small>'+(avg==null
+     ?"No scores yet"
+     :("Avg "+formatAverage(avg)+(avg<PASS_AVERAGE?" · failed":" · passed")))+
+    '</small></button>';
+  }).join("");
  }
 
  list.querySelectorAll(".student-chip").forEach(button=>{
@@ -1497,13 +1650,14 @@ function renderStudents(){
  const selected=studentById(selectedStudentId);
  if(!selected||selected.classIndex!==classIndex){
   detail.innerHTML=students.length
-   ?'<p class="muted" style="margin-top:18px">Click a student to view their test scores (out of 10).</p>'
+   ?'<p class="muted" style="margin-top:18px">Click a student to view grades (1–6) and average.</p>'
    :"";
   return;
  }
 
  const classObj=data.classes[selected.classIndex];
  const year=classObj?Number(classObj.year):0;
+ const avg=studentAverage(selected);
  const relevantTests=(data.tests||[])
   .filter(t=>Number(t.year)===year&&limitForClass(subjectById(t.subjectId),classObj)>0)
   .slice()
@@ -1511,8 +1665,10 @@ function renderStudents(){
 
  detail.innerHTML=
   '<div class="notice" style="margin-top:18px">'+
-   '<strong>'+esc(selected.name)+'</strong> · '+esc(classObj?classObj.name:"Unknown class")+
-   '<p class="muted">Test scores are out of 10. Use <strong>Add test</strong> to create new ones.</p>'+
+   '<strong>'+esc(formatStudentLabel(selected))+'</strong> · '+esc(classObj?classObj.name:"Unknown class")+
+   '<p class="muted">Average: <strong>'+formatAverage(avg)+'</strong>'+
+   (avg==null?"":(avg<PASS_AVERAGE?" · failed (need "+PASS_AVERAGE+"+)":" · passed"))+
+   '. Grades: Dreadful 1 → Outstanding 6.</p>'+
    '<div id="scoreFields"></div>'+
   '</div>';
 
@@ -1523,14 +1679,13 @@ function renderStudents(){
  }
 
  scoreFields.innerHTML=
-  '<div class="table-wrap"><table><thead><tr><th>Test</th><th>Subject</th><th>Score / 10</th></tr></thead><tbody>'+
+  '<div class="table-wrap"><table><thead><tr><th>Test</th><th>Subject</th><th>Grade</th></tr></thead><tbody>'+
   relevantTests.map(t=>{
    const subject=subjectById(t.subjectId);
    const score=selected.scores&&selected.scores[t.id]!=null?selected.scores[t.id]:"";
    return '<tr><td>'+esc(t.title)+'</td><td>'+esc(subject?subject.name:"")+'</td><td>'+
-    '<input class="student-test-score" data-testid="'+esc(t.id)+
-    '" type="number" min="0" max="10" step="0.5" value="'+esc(score)+
-    '" placeholder="0–10" style="max-width:110px"></td></tr>';
+    gradeSelectHtml("student-test-score",'data-testid="'+esc(t.id)+'"',score)+
+    '</td></tr>';
   }).join("")+
   '</tbody></table></div>'+
   '<div class="actions"><button type="button" id="saveStudentScores">Save scores</button></div>';
@@ -1550,15 +1705,15 @@ function renderStudents(){
      continue;
     }
     const n=Number(raw);
-    if(!Number.isFinite(n)||n<0||n>10){
-     showMessage("studentMessage","Scores must be numbers from 0 to 10.","warning");
+    if(!Number.isInteger(n)||n<1||n>6){
+     showMessage("studentMessage","Choose a grade from Dreadful (1) to Outstanding (6).","warning");
      return;
     }
     student.scores[test.id]=n;
    }
    persist();
    renderStudents();
-   showMessage("studentMessage","Scores saved for "+student.name+".","success");
+   showMessage("studentMessage","Scores saved for "+formatStudentLabel(student)+".","success");
   });
  }
 }
@@ -1607,6 +1762,7 @@ function createYear1Students(classes,existingStudents){
      usedFullNames,usedFirstNames,usedSurnames,firstNameQueue,surnameQueue
     ),
     classIndex,
+    house:house,
     scores:{}
    });
   }
@@ -1632,12 +1788,13 @@ function applyPromotion(year7Assignments){
     id:student.id,
     name:student.name,
     classIndex:destIndex,
+    house:studentHouse(student,classes),
     scores:student.scores&&typeof student.scores==="object"?Object.assign({},student.scores):{}
    });
   });
  });
 
- // Year 7 -> assigned Year 8 profiles.
+ // Year 7 -> assigned Year 8 profiles (keep house).
  (year7Assignments||[]).forEach(item=>{
   const student=data.students.find(s=>s.id===item.studentId);
   if(!student) return;
@@ -1645,6 +1802,7 @@ function applyPromotion(year7Assignments){
    id:student.id,
    name:student.name,
    classIndex:item.classIndex,
+   house:studentHouse(student,classes),
    scores:student.scores&&typeof student.scores==="object"?Object.assign({},student.scores):{}
   });
  });
@@ -1663,6 +1821,7 @@ function applyPromotion(year7Assignments){
      id:student.id,
      name:student.name,
      classIndex:toIndex,
+     house:house,
      scores:student.scores&&typeof student.scores==="object"?Object.assign({},student.scores):{}
     });
    });
@@ -1693,7 +1852,7 @@ function renderYear7PromotionPanel(year7Students){
    '<div class="table-wrap"><table><thead><tr><th>Student</th><th>Current class</th><th>Year 8 destination</th></tr></thead><tbody>'+
    year7Students.map(s=>{
     const current=data.classes[s.classIndex];
-    return '<tr><td>'+esc(s.name)+'</td><td>'+esc(current?current.name:"")+'</td><td>'+
+    return '<tr><td>'+esc(formatStudentLabel(s))+'</td><td>'+esc(current?current.name:"")+'</td><td>'+
      '<select class="year8-assign" data-id="'+esc(s.id)+'">'+
      '<option value="">— Choose profile class —</option>'+
      options.map(o=>'<option value="'+o.index+'">'+esc(o.name)+' (max '+o.capacity+')</option>').join("")+
