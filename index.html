@@ -121,16 +121,23 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 
 <section id="students" class="panel">
 <h2>Students and scores</h2>
-<p class="muted">Choose a class, then click a student to enter or edit their subject scores. Every first name and every surname is unique across the whole school.</p>
+<p class="muted">Search for a student, browse by class, or add a test (out of 10) for a subject and year. Every first name and every surname is unique across the whole school.</p>
 <div class="grid">
+<div>
+<label for="studentSearch">Search student</label>
+<input id="studentSearch" type="search" placeholder="Type a name…" maxlength="80">
+</div>
 <div>
 <label for="studentClassFilter">Class</label>
 <select id="studentClassFilter"></select>
 </div>
 </div>
 <div class="actions">
+<button type="button" id="addTestBtn">Add test</button>
 <button type="button" id="moveToNextClass">Move to next class</button>
 </div>
+<div id="studentSearchResults"></div>
+<div id="addTestPanel" style="display:none"></div>
 <div id="studentList" class="student-list"></div>
 <div id="studentDetail"></div>
 <div id="promotionPanel" style="display:none"></div>
@@ -252,7 +259,7 @@ function getWriteToken(){
  }
 }
 
-const SCHEMA_VERSION=12;
+const SCHEMA_VERSION=13;
 const CLASS_COUNT=47;
 const LESSONS_PER_TEACHER=25;
 const HOUSES=["Ivrella","Emilora","Johansen","Caspiella","Everett"];
@@ -699,17 +706,18 @@ function year8ClassOptions(classes){
  }).filter(item=>item.index>=0);
 }
 
-function normaliseStudent(s,classCount){
+function normaliseStudent(s,classCount,validTestIds){
  if(!s||typeof s!=="object") return null;
  const classIndex=Number(s.classIndex);
  if(!Number.isInteger(classIndex)||classIndex<0||classIndex>=classCount) return null;
  const scores={};
  if(s.scores&&typeof s.scores==="object"&&!Array.isArray(s.scores)){
-  Object.keys(s.scores).forEach(subjectId=>{
-   const raw=s.scores[subjectId];
+  Object.keys(s.scores).forEach(testId=>{
+   if(validTestIds&&!validTestIds.has(testId)) return;
+   const raw=s.scores[testId];
    if(raw===""||raw==null) return;
    const n=Number(raw);
-   if(Number.isFinite(n)) scores[subjectId]=n;
+   if(Number.isFinite(n)&&n>=0&&n<=10) scores[testId]=n;
   });
  }
  return {
@@ -720,6 +728,20 @@ function normaliseStudent(s,classCount){
  };
 }
 
+function normaliseTest(t){
+ if(!t||typeof t!=="object") return null;
+ const year=Number(t.year);
+ if(!Number.isInteger(year)||year<1||year>10) return null;
+ const subjectId=String(t.subjectId||"");
+ if(!subjectId) return null;
+ return {
+  id:t.id||makeId(),
+  subjectId,
+  year,
+  title:String(t.title||"").trim()||("Test · Year "+year)
+ };
+}
+
 function makeDefaultData(){
  const classes=makeDefaultClasses();
  return {
@@ -727,6 +749,7 @@ function makeDefaultData(){
   classes,
   subjects:makeDefaultSubjects(),
   students:makeDefaultStudents(classes),
+  tests:[],
   lessons:{},
   exceptions:[]
  };
@@ -815,6 +838,7 @@ function normaliseData(raw){
   classes:raw.classes,
   subjects:raw.subjects,
   students:raw.students,
+  tests:raw.tests,
   lessons:raw.lessons,
   exceptions:raw.exceptions
  };
@@ -829,6 +853,7 @@ function normaliseData(raw){
 
  if(!Array.isArray(next.subjects)) next.subjects=[];
  if(!Array.isArray(next.students)) next.students=[];
+ if(!Array.isArray(next.tests)) next.tests=[];
  if(!next.lessons||typeof next.lessons!=="object"||Array.isArray(next.lessons)) next.lessons={};
  if(!Array.isArray(next.exceptions)) next.exceptions=[];
 
@@ -883,8 +908,14 @@ function normaliseData(raw){
 
  next.exceptions=next.exceptions.filter(e=>typeof e==="string"&&e.indexOf("|")>=0);
 
+ next.tests=next.tests.map(normaliseTest).filter(Boolean);
+ // Drop tests whose subject no longer exists.
+ const subjectIds=new Set(next.subjects.map(s=>s.id));
+ next.tests=next.tests.filter(t=>subjectIds.has(t.subjectId));
+ const validTestIds=new Set(next.tests.map(t=>t.id));
+
  next.students=next.students
-  .map(s=>normaliseStudent(s,next.classes.length))
+  .map(s=>normaliseStudent(s,next.classes.length,validTestIds))
   .filter(Boolean);
 
  return next;
@@ -1245,6 +1276,17 @@ function studentById(id){
  return (data.students||[]).find(s=>s.id===id);
 }
 
+function testById(id){
+ return (data.tests||[]).find(t=>t.id===id);
+}
+
+function studentsInYear(year){
+ return (data.students||[]).filter(s=>{
+  const c=data.classes[s.classIndex];
+  return c&&Number(c.year)===Number(year);
+ });
+}
+
 function renderStudentClassFilter(){
  const select=document.getElementById("studentClassFilter");
  if(!select) return;
@@ -1256,8 +1298,172 @@ function renderStudentClassFilter(){
  if(previous!==""&&Number(previous)<data.classes.length) select.value=previous;
 }
 
+function renderStudentSearchResults(){
+ const box=document.getElementById("studentSearchResults");
+ const input=document.getElementById("studentSearch");
+ if(!box||!input) return;
+ const q=input.value.trim().toLowerCase();
+ if(!q){
+  box.innerHTML="";
+  return;
+ }
+ const matches=(data.students||[])
+  .filter(s=>String(s.name||"").toLowerCase().indexOf(q)>=0)
+  .slice()
+  .sort((a,b)=>a.name.localeCompare(b.name))
+  .slice(0,20);
+
+ if(!matches.length){
+  box.innerHTML='<p class="empty">No students match “'+esc(input.value.trim())+'”.</p>';
+  return;
+ }
+
+ box.innerHTML=
+  '<div class="notice" style="margin-top:12px"><strong>Search results</strong>'+
+  '<div class="student-list" style="margin-top:10px">'+
+  matches.map(s=>{
+   const c=data.classes[s.classIndex];
+   return '<button type="button" class="student-chip search-hit" data-id="'+esc(s.id)+'">'+
+    esc(s.name)+'<small>'+esc(c?c.name:"Unknown class")+'</small></button>';
+  }).join("")+
+  '</div></div>';
+
+ box.querySelectorAll(".search-hit").forEach(button=>{
+  button.addEventListener("click",()=>{
+   const student=studentById(button.dataset.id);
+   if(!student) return;
+   selectedStudentId=student.id;
+   const filter=document.getElementById("studentClassFilter");
+   if(filter) filter.value=String(student.classIndex);
+   input.value="";
+   box.innerHTML="";
+   renderStudents();
+  });
+ });
+}
+
+function hideAddTestPanel(){
+ const panel=document.getElementById("addTestPanel");
+ if(panel){
+  panel.style.display="none";
+  panel.innerHTML="";
+ }
+}
+
+function renderAddTestPanel(){
+ const panel=document.getElementById("addTestPanel");
+ if(!panel) return;
+ hidePromotionPanel();
+ panel.style.display="block";
+ panel.innerHTML=
+  '<div class="notice" style="margin-top:14px">'+
+   '<h3 style="margin-top:0">Add test</h3>'+
+   '<p class="muted">Choose the subject and year. Then enter a score out of 10 for each student in that year who takes the subject.</p>'+
+   '<div class="grid">'+
+    '<div><label for="testSubject">Subject</label><select id="testSubject">'+
+     '<option value="">— Choose subject —</option>'+
+     data.subjects.map(s=>'<option value="'+esc(s.id)+'">'+esc(s.name||"Unnamed")+'</option>').join("")+
+    '</select></div>'+
+    '<div><label for="testYear">Year</label><select id="testYear">'+
+     Array.from({length:10},(_,i)=>'<option value="'+(i+1)+'">Year '+(i+1)+'</option>').join("")+
+    '</select></div>'+
+    '<div><label for="testTitle">Test name (optional)</label>'+
+     '<input id="testTitle" maxlength="80" placeholder="e.g. Potions midterm"></div>'+
+   '</div>'+
+   '<div class="actions">'+
+    '<button type="button" id="startTestEntry">Continue</button>'+
+    '<button type="button" id="cancelAddTest" class="secondary">Cancel</button>'+
+   '</div>'+
+   '<div id="testScoreEntry"></div>'+
+  '</div>';
+
+ document.getElementById("cancelAddTest").addEventListener("click",()=>{
+  hideAddTestPanel();
+  showMessage("studentMessage","Add test cancelled.","warning");
+ });
+
+ document.getElementById("startTestEntry").addEventListener("click",()=>{
+  const subjectId=document.getElementById("testSubject").value;
+  const year=Number(document.getElementById("testYear").value);
+  const title=(document.getElementById("testTitle").value||"").trim();
+  const subject=subjectById(subjectId);
+  if(!subject){
+   showMessage("studentMessage","Choose a subject for the test.","warning");
+   return;
+  }
+
+  const eligible=studentsInYear(year).filter(s=>{
+   const c=data.classes[s.classIndex];
+   return c&&limitForClass(subject,c)>0;
+  }).slice().sort((a,b)=>{
+   const ca=data.classes[a.classIndex];
+   const cb=data.classes[b.classIndex];
+   const byClass=(ca&&ca.name||"").localeCompare(cb&&cb.name||"");
+   return byClass||a.name.localeCompare(b.name);
+  });
+
+  if(!eligible.length){
+   showMessage("studentMessage","No students in Year "+year+" take "+subject.name+".","warning");
+   return;
+  }
+
+  const entry=document.getElementById("testScoreEntry");
+  entry.innerHTML=
+   '<h3>'+esc(title||(subject.name+" test"))+' · Year '+year+' · out of 10</h3>'+
+   '<p class="muted">'+eligible.length+' students</p>'+
+   '<div class="table-wrap"><table><thead><tr><th>Student</th><th>Class</th><th>Score / 10</th></tr></thead><tbody>'+
+   eligible.map(s=>{
+    const c=data.classes[s.classIndex];
+    return '<tr><td>'+esc(s.name)+'</td><td>'+esc(c?c.name:"")+'</td><td>'+
+     '<input class="test-score-input" data-id="'+esc(s.id)+
+     '" type="number" min="0" max="10" step="0.5" placeholder="0–10" style="max-width:110px"></td></tr>';
+   }).join("")+
+   '</tbody></table></div>'+
+   '<div class="actions">'+
+    '<button type="button" id="saveNewTest">Save test scores</button>'+
+   '</div>';
+
+  document.getElementById("saveNewTest").addEventListener("click",()=>{
+   const scoresByStudent={};
+   for(const student of eligible){
+    const input=entry.querySelector('.test-score-input[data-id="'+student.id+'"]');
+    const raw=input?input.value.trim():"";
+    if(raw==="") continue;
+    const n=Number(raw);
+    if(!Number.isFinite(n)||n<0||n>10){
+     showMessage("studentMessage","Scores must be numbers from 0 to 10.","warning");
+     return;
+    }
+    scoresByStudent[student.id]=n;
+   }
+
+   if(!data.tests) data.tests=[];
+   const test={
+    id:makeId(),
+    subjectId:subject.id,
+    year,
+    title:title||(subject.name+" · Year "+year)
+   };
+   data.tests.push(test);
+
+   Object.keys(scoresByStudent).forEach(studentId=>{
+    const student=studentById(studentId);
+    if(!student) return;
+    if(!student.scores||typeof student.scores!=="object") student.scores={};
+    student.scores[test.id]=scoresByStudent[studentId];
+   });
+
+   persist();
+   hideAddTestPanel();
+   renderStudents();
+   showMessage("studentMessage",'Saved test “'+test.title+'” for Year '+year+'.',"success");
+  });
+ });
+}
+
 function renderStudents(){
  renderStudentClassFilter();
+ renderStudentSearchResults();
  const filter=document.getElementById("studentClassFilter");
  const classIndex=Number(filter&&filter.value||0);
  const list=document.getElementById("studentList");
@@ -1275,7 +1481,9 @@ function renderStudents(){
   list.innerHTML=students.map(s=>
    '<button type="button" class="student-chip'+(s.id===selectedStudentId?" active":"")+
    '" data-id="'+esc(s.id)+'">'+esc(s.name)+
-   '<small>'+(Object.keys(s.scores||{}).length?"Has scores":"No scores yet")+'</small></button>'
+   '<small>'+(Object.keys(s.scores||{}).length
+    ?(Object.keys(s.scores).length+" test score"+(Object.keys(s.scores).length===1?"":"s"))
+    :"No scores yet")+'</small></button>'
   ).join("");
  }
 
@@ -1289,55 +1497,65 @@ function renderStudents(){
  const selected=studentById(selectedStudentId);
  if(!selected||selected.classIndex!==classIndex){
   detail.innerHTML=students.length
-   ?'<p class="muted" style="margin-top:18px">Click a student to enter scores.</p>'
+   ?'<p class="muted" style="margin-top:18px">Click a student to view their test scores (out of 10).</p>'
    :"";
   return;
  }
 
  const classObj=data.classes[selected.classIndex];
- const scoreSubjects=data.subjects.filter(subject=>limitForClass(subject,classObj)>0);
+ const year=classObj?Number(classObj.year):0;
+ const relevantTests=(data.tests||[])
+  .filter(t=>Number(t.year)===year&&limitForClass(subjectById(t.subjectId),classObj)>0)
+  .slice()
+  .sort((a,b)=>a.title.localeCompare(b.title));
 
  detail.innerHTML=
   '<div class="notice" style="margin-top:18px">'+
    '<strong>'+esc(selected.name)+'</strong> · '+esc(classObj?classObj.name:"Unknown class")+
-   '<div class="score-grid" id="scoreFields"></div>'+
-   '<div class="actions"><button type="button" id="saveStudentScores">Save scores</button></div>'+
+   '<p class="muted">Test scores are out of 10. Use <strong>Add test</strong> to create new ones.</p>'+
+   '<div id="scoreFields"></div>'+
   '</div>';
 
  const scoreFields=document.getElementById("scoreFields");
- if(!scoreSubjects.length){
-  scoreFields.innerHTML='<p class="empty">No subjects are assigned to this class yet.</p>';
- }else{
-  scoreSubjects.forEach(subject=>{
-   const wrap=document.createElement("div");
-   const value=selected.scores&&selected.scores[subject.id]!=null?selected.scores[subject.id]:"";
-   wrap.innerHTML=
-    '<label for="score_'+esc(subject.id)+'">'+esc(subject.name)+'</label>'+
-    '<input id="score_'+esc(subject.id)+'" type="number" min="0" max="100" step="0.1" '+
-    'value="'+esc(value)+'" placeholder="0–100">';
-   scoreFields.appendChild(wrap);
-  });
+ if(!relevantTests.length){
+  scoreFields.innerHTML='<p class="empty">No tests yet for Year '+year+'.</p>';
+  return;
  }
+
+ scoreFields.innerHTML=
+  '<div class="table-wrap"><table><thead><tr><th>Test</th><th>Subject</th><th>Score / 10</th></tr></thead><tbody>'+
+  relevantTests.map(t=>{
+   const subject=subjectById(t.subjectId);
+   const score=selected.scores&&selected.scores[t.id]!=null?selected.scores[t.id]:"";
+   return '<tr><td>'+esc(t.title)+'</td><td>'+esc(subject?subject.name:"")+'</td><td>'+
+    '<input class="student-test-score" data-testid="'+esc(t.id)+
+    '" type="number" min="0" max="10" step="0.5" value="'+esc(score)+
+    '" placeholder="0–10" style="max-width:110px"></td></tr>';
+  }).join("")+
+  '</tbody></table></div>'+
+  '<div class="actions"><button type="button" id="saveStudentScores">Save scores</button></div>';
 
  const saveBtn=document.getElementById("saveStudentScores");
  if(saveBtn){
   saveBtn.addEventListener("click",()=>{
    const student=studentById(selectedStudentId);
    if(!student) return;
-   const nextScores={};
-   for(const subject of scoreSubjects){
-    const input=document.getElementById("score_"+subject.id);
+   if(!student.scores||typeof student.scores!=="object") student.scores={};
+   for(const test of relevantTests){
+    const input=detail.querySelector('.student-test-score[data-testid="'+test.id+'"]');
     if(!input) continue;
     const raw=input.value.trim();
-    if(raw==="") continue;
+    if(raw===""){
+     delete student.scores[test.id];
+     continue;
+    }
     const n=Number(raw);
-    if(!Number.isFinite(n)||n<0||n>100){
-     showMessage("studentMessage","Scores must be numbers from 0 to 100.","warning");
+    if(!Number.isFinite(n)||n<0||n>10){
+     showMessage("studentMessage","Scores must be numbers from 0 to 10.","warning");
      return;
     }
-    nextScores[subject.id]=n;
+    student.scores[test.id]=n;
    }
-   student.scores=nextScores;
    persist();
    renderStudents();
    showMessage("studentMessage","Scores saved for "+student.name+".","success");
@@ -1348,6 +1566,15 @@ function renderStudents(){
 document.getElementById("studentClassFilter").addEventListener("change",()=>{
  selectedStudentId="";
  renderStudents();
+});
+
+document.getElementById("studentSearch").addEventListener("input",()=>{
+ renderStudentSearchResults();
+});
+
+document.getElementById("addTestBtn").addEventListener("click",()=>{
+ showMessage("studentMessage","","");
+ renderAddTestPanel();
 });
 
 function hidePromotionPanel(){
