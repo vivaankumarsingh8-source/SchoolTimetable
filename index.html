@@ -112,6 +112,7 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 <p class="muted">
 Create each subject once. Add all the teachers who can teach it.
 Teacher names must be unique across every subject.
+Teacher counts are kept to the minimum needed if each teacher takes 25 lessons a week.
 Then set how many lessons per week each year or profile group is allowed to have.
 Years 1–5 share one limit; Year 6 and Year 7 are separate; Years 8–10 use profile limits (General Stuff 8/10, Spells 8/10, etc.).
 </p>
@@ -214,8 +215,9 @@ function getWriteToken(){
  }
 }
 
-const SCHEMA_VERSION=8;
+const SCHEMA_VERSION=9;
 const CLASS_COUNT=47;
+const LESSONS_PER_TEACHER=25;
 const HOUSES=["Ivrella","Emilora","Johansen","Caspiella","Everett"];
 const PROFILES=[
  {
@@ -313,6 +315,15 @@ function makeSubject(name,teachers,y15,y6,y7){
  return {id:makeId(),name,teachers,limits:makeLimits(y15,y6,y7,name)};
 }
 
+function totalLimitLessonsForSubject(subject,classes){
+ return (classes||[]).reduce((sum,c)=>sum+(limitForClass(subject,c)||0),0);
+}
+
+function minTeachersForLessons(totalLessons){
+ if(totalLessons<=0) return 0;
+ return Math.ceil(totalLessons/LESSONS_PER_TEACHER);
+}
+
 function makeDefaultClasses(){
  const classes=[];
  HOUSES.forEach(house=>{
@@ -330,26 +341,83 @@ function makeDefaultClasses(){
 
 function makeDefaultSubjects(){
  const usedNames=new Set();
- const take=(count,featured)=>makeTeachers(count,featured,usedNames);
-
- return [
-  makeSubject("General Knowledge",take(5,"Professor Robertson"),2,2,2),
-  makeSubject("Hand Spells",take(10,"Professor Mordie"),4,5,3),
-  makeSubject("Balls",take(10,"Professor Hord"),4,5,3),
-  makeSubject("Defence",take(15,"Professor Victoire"),4,5,3),
-  makeSubject("Plants",take(10,"Professor Savannah"),3,4,3),
-  makeSubject("Quader",take(1,"Madam Bell"),1,0,0),
-  makeSubject("History of Ovloda",take(5,"Professor William"),2,3,1),
-  makeSubject("Potions",take(5,"Professor Joey"),3,4,3),
-  makeSubject("Ancient Runes",take(5,"Professor Anna"),2,2,2),
-  makeSubject("Wand Theory",take(5,"Professor Sally"),0,0,10),
-  makeSubject("Spells",take(3,"Professor Flitter"),0,0,0),
-  makeSubject("Defence against the dark arts",take(3,"Professor Rooxsan"),0,0,0),
-  makeSubject("Charms",take(3,"Professor Melana"),0,0,0),
-  makeSubject("Transfiguration",take(3,"Professor Aliana"),0,0,0),
-  makeSubject("G Spells",take(3,"Professor Galena"),0,0,0),
-  makeSubject("M Defence",take(3,"Professor Morwen"),0,0,0)
+ const classes=makeDefaultClasses();
+ const specs=[
+  {name:"General Knowledge",featured:"Professor Robertson",y15:2,y6:2,y7:2},
+  {name:"Hand Spells",featured:"Professor Mordie",y15:4,y6:5,y7:3},
+  {name:"Balls",featured:"Professor Hord",y15:4,y6:5,y7:3},
+  {name:"Defence",featured:"Professor Victoire",y15:4,y6:5,y7:3},
+  {name:"Plants",featured:"Professor Savannah",y15:3,y6:4,y7:3},
+  {name:"Quader",featured:"Madam Bell",y15:1,y6:0,y7:0},
+  {name:"History of Ovloda",featured:"Professor William",y15:2,y6:3,y7:1},
+  {name:"Potions",featured:"Professor Joey",y15:3,y6:4,y7:3},
+  {name:"Ancient Runes",featured:"Professor Anna",y15:2,y6:2,y7:2},
+  {name:"Wand Theory",featured:"Professor Sally",y15:0,y6:0,y7:10},
+  {name:"Spells",featured:"Professor Flitter",y15:0,y6:0,y7:0},
+  {name:"Defence against the dark arts",featured:"Professor Rooxsan",y15:0,y6:0,y7:0},
+  {name:"Charms",featured:"Professor Melana",y15:0,y6:0,y7:0},
+  {name:"Transfiguration",featured:"Professor Aliana",y15:0,y6:0,y7:0},
+  {name:"G Spells",featured:"Professor Galena",y15:0,y6:0,y7:0},
+  {name:"M Defence",featured:"Professor Morwen",y15:0,y6:0,y7:0}
  ];
+
+ return specs.map(spec=>{
+  const limits=makeLimits(spec.y15,spec.y6,spec.y7,spec.name);
+  const total=totalLimitLessonsForSubject({limits},classes);
+  const count=minTeachersForLessons(total);
+  const teachers=count>0?makeTeachers(count,spec.featured,usedNames):[];
+  return {id:makeId(),name:spec.name,teachers,limits};
+ });
+}
+
+function makeUniqueTeacher(usedNames){
+ let poolIndex=0;
+ let guestNumber=1;
+ while(true){
+  let candidate;
+  if(poolIndex<PROFESSOR_NAME_POOL.length) candidate=PROFESSOR_NAME_POOL[poolIndex++];
+  else candidate="Professor Guest "+guestNumber++;
+  const key=candidate.toLowerCase();
+  if(usedNames.has(key)) continue;
+  usedNames.add(key);
+  return {id:makeId(),name:candidate};
+ }
+}
+
+function syncSubjectTeacherCounts(subjects,classes,lessons){
+ const lessonMap=lessons&&typeof lessons==="object"?lessons:{};
+ const usedNames=new Set();
+ subjects.forEach(subject=>{
+  (subject.teachers||[]).forEach(t=>{
+   const n=String(t.name||"").trim().toLowerCase();
+   if(n) usedNames.add(n);
+  });
+ });
+
+ subjects.forEach(subject=>{
+  const need=minTeachersForLessons(totalLimitLessonsForSubject(subject,classes));
+  const teachers=Array.isArray(subject.teachers)?subject.teachers.slice():[];
+
+  while(teachers.length>need){
+   const removable=teachers.map((t,i)=>({t,i})).reverse().find(({t})=>{
+    if(!String(t.name||"").trim()) return true;
+    return !Object.values(lessonMap).some(l=>
+     l&&l.subjectId===subject.id&&l.teacherId===t.id
+    );
+   });
+   if(!removable) break;
+   const removed=teachers.splice(removable.i,1)[0];
+   const n=String(removed.name||"").trim().toLowerCase();
+   if(n) usedNames.delete(n);
+  }
+
+  while(teachers.length<need){
+   teachers.push(makeUniqueTeacher(usedNames));
+  }
+
+  subject.teachers=teachers;
+ });
+ return subjects;
 }
 
 function makeDefaultData(){
@@ -483,16 +551,21 @@ function normaliseData(raw){
   });
  });
  [
-  {name:"G Spells",count:3,featured:"Professor Galena"},
-  {name:"M Defence",count:3,featured:"Professor Morwen"}
+  {name:"G Spells",featured:"Professor Galena"},
+  {name:"M Defence",featured:"Professor Morwen"}
  ].forEach(item=>{
   if(byName.has(item.name.toLowerCase())) return;
-  next.subjects.push(makeSubject(
-   item.name,
-   makeTeachers(item.count,item.featured,usedTeacherNames),
-   0,0,0
-  ));
+  const limits=makeLimits(0,0,0,item.name);
+  const count=minTeachersForLessons(totalLimitLessonsForSubject({limits},next.classes));
+  next.subjects.push({
+   id:makeId(),
+   name:item.name,
+   teachers:count>0?makeTeachers(count,item.featured,usedTeacherNames):[],
+   limits
+  });
  });
+
+ syncSubjectTeacherCounts(next.subjects,next.classes,next.lessons);
 
  Object.keys(next.lessons).forEach(k=>{
   const l=next.lessons[k];
@@ -1083,10 +1156,11 @@ document.getElementById("saveSubjects").addEventListener("click",()=>{
  if(!proposed) return;
 
  data.subjects=proposed;
+ syncSubjectTeacherCounts(data.subjects,data.classes,data.lessons);
  persist();
  renderSubjects();
  renderEditor();
- showMessage("subjectMessage","Subjects, teacher lists and year limits saved successfully.","success");
+ showMessage("subjectMessage","Subjects, teacher lists and year limits saved successfully. Teachers adjusted to at least 1 per 25 weekly lessons.","success");
 });
 
 // Timetable editor
