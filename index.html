@@ -451,16 +451,29 @@ function effectiveClassesPerTeacher(subject){
  return calculatedClassesPerTeacher(subject);
 }
 
-function classesTaughtByTeacher(subjectId,teacherId){
+function classesWithLessonsByTeacher(subjectId,teacherId){
+ const classes=new Set();
+ if(!subjectId||!teacherId) return classes;
+ Object.entries(data.lessons||{}).forEach(([k,lesson])=>{
+  if(!lesson||lesson.subjectId!==subjectId||lesson.teacherId!==teacherId) return;
+  classes.add(Number(String(k).split("|")[0]));
+ });
+ return classes;
+}
+
+function classDefaultsByTeacher(subjectId,teacherId){
  const classes=new Set();
  if(!subjectId||!teacherId) return classes;
  Object.entries(data.classTeachers||{}).forEach(([ci,map])=>{
   if(map&&map[subjectId]===teacherId) classes.add(Number(ci));
  });
- Object.entries(data.lessons||{}).forEach(([k,lesson])=>{
-  if(!lesson||lesson.subjectId!==subjectId||lesson.teacherId!==teacherId) return;
-  classes.add(Number(String(k).split("|")[0]));
- });
+ return classes;
+}
+
+function classesTaughtByTeacher(subjectId,teacherId){
+ // Union of timetable lessons and class-teacher defaults.
+ const classes=classesWithLessonsByTeacher(subjectId,teacherId);
+ classDefaultsByTeacher(subjectId,teacherId).forEach(ci=>classes.add(ci));
  return classes;
 }
 
@@ -470,6 +483,42 @@ function teacherAtClassLimit(subject,teacherId,exceptClassIndex){
  const taught=classesTaughtByTeacher(subject.id,teacherId);
  if(exceptClassIndex!=null) taught.delete(Number(exceptClassIndex));
  return taught.size>=limit;
+}
+
+function teacherIdsForName(teacherName){
+ const nameKey=String(teacherName||"").trim().toLowerCase();
+ const ids=new Set();
+ if(!nameKey) return ids;
+ (data.subjects||[]).forEach(s=>{
+  (s.teachers||[]).forEach(t=>{
+   if(String(t.name||"").trim().toLowerCase()===nameKey) ids.add(t.id);
+  });
+ });
+ return ids;
+}
+
+function defaultClassesForTeacherName(teacherName){
+ const ids=teacherIdsForName(teacherName);
+ const rows=[];
+ Object.entries(data.classTeachers||{}).forEach(([ci,map])=>{
+  if(!map||typeof map!=="object") return;
+  const classIndex=Number(ci);
+  const classObj=data.classes[classIndex];
+  if(!classObj) return;
+  Object.keys(map).forEach(subjectId=>{
+   if(!ids.has(map[subjectId])) return;
+   const subject=subjectById(subjectId);
+   rows.push({
+    ci:classIndex,
+    classObj,
+    subjectId,
+    subjectName:subject&&subject.name?subject.name:"Unknown subject"
+   });
+  });
+ });
+ return rows.sort((a,b)=>
+  a.classObj.name.localeCompare(b.classObj.name)||a.subjectName.localeCompare(b.subjectName)
+ );
 }
 
 function makeDefaultClasses(){
@@ -1710,6 +1759,7 @@ function allTeacherNames(){
 
 function lessonsForTeacherName(teacherName){
  const nameKey=String(teacherName||"").trim().toLowerCase();
+ const teacherIds=teacherIdsForName(teacherName);
  if(!nameKey) return [];
  const slots=[];
  Object.entries(data.lessons||{}).forEach(([k,lesson])=>{
@@ -1719,8 +1769,9 @@ function lessonsForTeacherName(teacherName){
   const day=parts[1];
   const period=Number(parts[2]);
   if(!data.classes[ci]||DAYS.indexOf(day)<0||!Number.isInteger(period)) return;
-  const lessonTeacher=teacherNameFromIds(lesson.subjectId,lesson.teacherId).toLowerCase();
-  if(lessonTeacher!==nameKey) return;
+  const byId=teacherIds.has(lesson.teacherId);
+  const byName=teacherNameFromIds(lesson.subjectId,lesson.teacherId).toLowerCase()===nameKey;
+  if(!byId&&!byName) return;
   const subject=subjectById(lesson.subjectId);
   slots.push({
    key:k,
@@ -1772,15 +1823,18 @@ function renderTeacherSchedule(){
  }
 
  const slots=lessonsForTeacherName(teacherName);
+ const defaults=defaultClassesForTeacherName(teacherName);
  const subjects=subjectsTaughtByTeacherName(teacherName);
- const classes=Array.from(new Set(slots.map(s=>s.classObj.name))).sort((a,b)=>a.localeCompare(b));
+ const scheduledClasses=Array.from(new Set(slots.map(s=>s.classObj.name))).sort((a,b)=>a.localeCompare(b));
+ const defaultClassNames=Array.from(new Set(defaults.map(d=>d.classObj.name))).sort((a,b)=>a.localeCompare(b));
 
  summary.innerHTML=
   '<div class="notice" style="margin-top:14px">'+
    '<strong>'+esc(teacherName)+'</strong><br>'+
-   'Lessons this week: <strong>'+slots.length+'</strong> / '+LESSONS_PER_TEACHER+
+   'Lessons on the timetable: <strong>'+slots.length+'</strong> / '+LESSONS_PER_TEACHER+
    (subjects.length?' · Subjects: '+esc(subjects.join(", ")):"")+
-   (classes.length?' · Classes: '+esc(classes.join(", ")):"")+
+   (scheduledClasses.length?' · Classes with lessons: '+esc(scheduledClasses.join(", ")):"")+
+   (defaultClassNames.length?' · Set as class teacher for: '+esc(defaultClassNames.join(", ")):"")+
   '</div>';
 
  const bySlot={};
@@ -1818,12 +1872,26 @@ function renderTeacherSchedule(){
  html+='</tbody></table>';
  board.innerHTML=html;
 
+ let listHtml="";
+ if(defaults.length){
+  listHtml+=
+   '<h3 style="margin-top:20px">Class teacher defaults</h3>'+
+   '<p class="muted">These are set on the Timetable tab. They do not appear in the week grid until you place lessons.</p>'+
+   '<div class="table-wrap"><table><thead><tr><th>Class</th><th>Year</th><th>Subject</th></tr></thead><tbody>'+
+   defaults.map(d=>'<tr><td>'+esc(d.classObj.name)+'</td><td>'+d.classObj.year+
+    '</td><td>'+esc(d.subjectName)+'</td></tr>').join("")+
+   '</tbody></table></div>';
+ }
+
  if(!slots.length){
-  list.innerHTML='<p class="empty">No lessons scheduled for this teacher yet.</p>';
+  listHtml+=defaults.length
+   ?'<p class="empty">No lessons on the timetable for this teacher yet — only class-teacher defaults above.</p>'
+   :'<p class="empty">No lessons scheduled for this teacher yet.</p>';
+  list.innerHTML=listHtml;
   return;
  }
 
- list.innerHTML=
+ listHtml+=
   '<h3 style="margin-top:20px">Lesson list</h3>'+
   '<div class="table-wrap"><table><thead><tr><th>Day</th><th>Period</th><th>Time</th><th>Class</th><th>Year</th><th>Subject</th></tr></thead><tbody>'+
   slots.map(slot=>{
@@ -1833,6 +1901,7 @@ function renderTeacherSchedule(){
     slot.classObj.year+'</td><td>'+esc(slot.subjectName)+'</td></tr>';
   }).join("")+
   '</tbody></table></div>';
+ list.innerHTML=listHtml;
 }
 
 document.getElementById("selectedTeacher").addEventListener("change",renderTeacherSchedule);
@@ -2592,11 +2661,16 @@ function renderSubjects(){
   const calcClasses=calculatedClassesPerTeacher(subject);
   const effectiveClasses=effectiveClassesPerTeacher(subject);
   const teacherRows=subject.teachers.map((teacher,teacherIndex)=>{
-   const taught=classesTaughtByTeacher(subject.id,teacher.id).size;
+   const scheduled=classesWithLessonsByTeacher(subject.id,teacher.id).size;
+   const defaults=classDefaultsByTeacher(subject.id,teacher.id).size;
+   let load="";
+   if(String(teacher.name||"").trim()){
+    load=' <span class="muted">('+scheduled+'/'+effectiveClasses+' classes with lessons';
+    if(defaults) load+=' · '+defaults+' class default'+(defaults===1?"":"s");
+    load+=')</span>';
+   }
    return '<div class="teacher-row">'+
-    '<div><label for="teacher_'+index+'_'+teacherIndex+'">Teacher '+(teacherIndex+1)+
-    (String(teacher.name||"").trim()?' <span class="muted">('+taught+'/'+effectiveClasses+' classes)</span>':'')+
-    '</label>'+
+    '<div><label for="teacher_'+index+'_'+teacherIndex+'">Teacher '+(teacherIndex+1)+load+'</label>'+
     '<input id="teacher_'+index+'_'+teacherIndex+'" maxlength="80" value="'+esc(teacher.name)+'" placeholder="Teacher name"></div>'+
     '<button type="button" class="danger removeTeacher" data-subject="'+index+'" data-teacher="'+teacherIndex+'">Remove</button>'+
    '</div>';
