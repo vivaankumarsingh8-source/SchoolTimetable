@@ -217,19 +217,27 @@ A teacher can only teach two classes at the same time if those classes are in th
 
 <div class="grid">
 <div>
-<label for="selectedClass">Class</label>
-<select id="selectedClass"></select>
+<label for="selectedYear">Year</label>
+<select id="selectedYear"></select>
+</div>
+<div>
+<label for="selectedDay">Day</label>
+<select id="selectedDay"></select>
+</div>
+<div>
+<label for="teacherDefaultsClass">Set teachers for</label>
+<select id="teacherDefaultsClass"></select>
 </div>
 </div>
 
-<p class="muted" style="margin-top:12px">One class at a time, with Monday–Friday shown together. Set this class’s teachers below, then pick subjects in the week grid — the teacher fills in automatically.</p>
+<p class="muted" style="margin-top:12px">One year and one day at a time — every class in that year is shown side by side. Set each class’s teachers above, then pick subjects in the day board — the teacher fills in automatically.</p>
 
 <div id="classTeacherDefaults"></div>
 <div class="table-wrap" id="periodEditor"></div>
 <div id="editorMessage"></div>
 
 <div class="actions">
-<button id="clearWeek" class="danger">Clear this class’s whole week</button>
+<button id="clearDay" class="danger">Clear this year for this day</button>
 <button id="showOverview" class="secondary">View all scheduled lessons</button>
 </div>
 
@@ -1448,21 +1456,57 @@ function showMessage(id,message,type){
   :"";
 }
 
-function currentClassIndex(){
- const select=document.getElementById("selectedClass");
+function currentYear(){
+ const select=document.getElementById("selectedYear");
  const value=Number(select&&select.value);
- if(!Number.isInteger(value)||value<0||value>=data.classes.length) return 0;
+ if(!Number.isInteger(value)||value<1||value>10) return 1;
  return value;
 }
 
-function renderClassSelector(){
- const select=document.getElementById("selectedClass");
- if(!select) return;
- const previous=select.value;
- select.innerHTML=data.classes.map((c,i)=>
-  '<option value="'+i+'">'+esc(c.name)+' (Year '+c.year+')</option>'
+function currentDay(){
+ const select=document.getElementById("selectedDay");
+ const value=select&&select.value;
+ return DAYS.indexOf(value)>=0?value:DAYS[0];
+}
+
+function classesInYear(year){
+ const y=Number(year);
+ return data.classes
+  .map((c,i)=>({classObj:c,ci:i}))
+  .filter(item=>Number(item.classObj.year)===y)
+  .sort((a,b)=>a.classObj.name.localeCompare(b.classObj.name));
+}
+
+function currentTeacherDefaultsClassIndex(yearClasses){
+ const select=document.getElementById("teacherDefaultsClass");
+ const value=Number(select&&select.value);
+ if(yearClasses.some(item=>item.ci===value)) return value;
+ return yearClasses.length?yearClasses[0].ci:-1;
+}
+
+function renderYearDaySelectors(){
+ const yearSelect=document.getElementById("selectedYear");
+ const daySelect=document.getElementById("selectedDay");
+ const classSelect=document.getElementById("teacherDefaultsClass");
+ if(!yearSelect||!daySelect||!classSelect) return;
+
+ const prevYear=yearSelect.value;
+ const prevDay=daySelect.value;
+ const prevClass=classSelect.value;
+
+ yearSelect.innerHTML=Array.from({length:10},(_,i)=>
+  '<option value="'+(i+1)+'">Year '+(i+1)+'</option>'
  ).join("");
- if(previous!==""&&Number(previous)<data.classes.length) select.value=previous;
+ if(prevYear!==""&&Number(prevYear)>=1&&Number(prevYear)<=10) yearSelect.value=prevYear;
+
+ daySelect.innerHTML=DAYS.map(day=>'<option value="'+esc(day)+'">'+esc(day)+'</option>').join("");
+ if(DAYS.indexOf(prevDay)>=0) daySelect.value=prevDay;
+
+ const yearClasses=classesInYear(currentYear());
+ classSelect.innerHTML=yearClasses.length
+  ?yearClasses.map(item=>'<option value="'+item.ci+'">'+esc(item.classObj.name)+'</option>').join("")
+  :'<option value="">No classes</option>';
+ if(prevClass!==""&&yearClasses.some(item=>String(item.ci)===prevClass)) classSelect.value=prevClass;
 }
 
 function getLessonCount(classIndex,subjectId){
@@ -2870,14 +2914,16 @@ function trySaveLesson(ci,day,periodNumber,subjectId,teacherId){
 }
 
 function renderEditor(){
- renderClassSelector();
- const ci=currentClassIndex();
- const classObj=data.classes[ci];
+ renderYearDaySelectors();
+ const year=currentYear();
+ const day=currentDay();
+ const yearClasses=classesInYear(year);
+ const defaultsCi=currentTeacherDefaultsClassIndex(yearClasses);
  const container=document.getElementById("periodEditor");
  container.innerHTML="";
 
- if(!classObj){
-  container.innerHTML='<p class="empty">No class selected.</p>';
+ if(!yearClasses.length){
+  container.innerHTML='<p class="empty">No classes in Year '+year+'.</p>';
   const defaults=document.getElementById("classTeacherDefaults");
   if(defaults) defaults.innerHTML="";
   document.getElementById("editorMessage").innerHTML="";
@@ -2889,7 +2935,7 @@ function renderEditor(){
 
  const thead=document.createElement("thead");
  thead.innerHTML='<tr><th class="period-label">Period</th>'+
-  DAYS.map(day=>'<th>'+esc(day)+'</th>').join("")+
+  yearClasses.map(item=>'<th class="class-name">'+esc(item.classObj.name)+'</th>').join("")+
   '</tr>';
  table.appendChild(thead);
 
@@ -2900,7 +2946,7 @@ function renderEditor(){
    const lunchRow=document.createElement("tr");
    lunchRow.innerHTML=
     '<td class="period-label">Lunch</td>'+
-    '<td colspan="'+DAYS.length+'"><div class="lunch" style="margin:0">🍽 11:30–12:30</div></td>';
+    '<td colspan="'+yearClasses.length+'"><div class="lunch" style="margin:0">🍽 11:30–12:30</div></td>';
    tbody.appendChild(lunchRow);
   }
 
@@ -2911,7 +2957,7 @@ function renderEditor(){
    '<br><small style="font-weight:normal;color:#667085">'+period.start+"–"+period.end+"</small>";
   tr.appendChild(label);
 
-  DAYS.forEach(day=>{
+  yearClasses.forEach(({classObj,ci})=>{
    const td=document.createElement("td");
    const stack=document.createElement("div");
    stack.className="cell-stack";
@@ -2969,7 +3015,6 @@ function renderEditor(){
      applySave("","");
      return;
     }
-    // Remember this teacher as the class default for that subject.
     setClassTeacherId(ci,subjectSelect.value,teacherSelect.value);
     applySave(subjectSelect.value,teacherSelect.value);
    });
@@ -2985,39 +3030,49 @@ function renderEditor(){
 
  table.appendChild(tbody);
  container.appendChild(table);
- renderClassTeacherDefaults(ci);
- renderEditorMessage(ci);
+ renderClassTeacherDefaults(defaultsCi);
+ renderEditorMessage(year,day,yearClasses);
 }
 
-function renderEditorMessage(ci){
- const classObj=data.classes[ci];
- const counts=data.subjects.map(subject=>({
-  name:subject.name,
-  count:getLessonCount(ci,subject.id),
-  limit:getYearLimit(ci,subject.id)
- })).filter(s=>s.limit>0||s.count>0);
+function renderEditorMessage(year,day,yearClasses){
+ let html='<div class="success">Showing Year '+year+' on '+esc(day)+
+  ' ('+yearClasses.length+' class'+(yearClasses.length===1?"":"es")+
+  '). Wait for “Saved to shared timetable” in the top bar before closing or hard-refreshing.</div>';
 
- let html='<div class="success">Showing '+esc(classObj.name)+
-  ' (Year '+classObj.year+') for the whole week. Wait for “Saved to shared timetable” in the top bar before closing or hard-refreshing.</div>';
-
- if(counts.length){
-  html+='<div class="notice"><strong>Weekly lesson counts:</strong><br>'+
+ const countBlocks=yearClasses.map(({classObj,ci})=>{
+  const counts=data.subjects.map(subject=>({
+   name:subject.name,
+   count:getLessonCount(ci,subject.id),
+   limit:getYearLimit(ci,subject.id)
+  })).filter(s=>s.limit>0||s.count>0);
+  if(!counts.length) return "";
+  return '<div style="margin-top:10px"><strong>'+esc(classObj.name)+'</strong><br>'+
    counts.map(s=>esc(s.name)+": "+s.count+"/"+s.limit).join("<br>")+
    '</div>';
+ }).filter(Boolean).join("");
+
+ if(countBlocks){
+  html+='<div class="notice"><strong>Weekly lesson counts:</strong>'+countBlocks+'</div>';
  }
 
  document.getElementById("editorMessage").innerHTML=html;
 }
 
-document.getElementById("selectedClass").addEventListener("change",renderEditor);
+document.getElementById("selectedYear").addEventListener("change",renderEditor);
+document.getElementById("selectedDay").addEventListener("change",renderEditor);
+document.getElementById("teacherDefaultsClass").addEventListener("change",()=>{
+ const yearClasses=classesInYear(currentYear());
+ renderClassTeacherDefaults(currentTeacherDefaultsClassIndex(yearClasses));
+});
 
-document.getElementById("clearWeek").addEventListener("click",()=>{
- const ci=currentClassIndex();
- const classObj=data.classes[ci];
- if(!classObj) return;
- if(!confirm("Clear every lesson for "+classObj.name+" for the whole week?")) return;
+document.getElementById("clearDay").addEventListener("click",()=>{
+ const year=currentYear();
+ const day=currentDay();
+ const yearClasses=classesInYear(year);
+ if(!yearClasses.length) return;
+ if(!confirm("Clear every lesson for Year "+year+" on "+day+"?")) return;
 
- DAYS.forEach(day=>{
+ yearClasses.forEach(({ci})=>{
   PERIODS.forEach(p=>delete data.lessons[key(ci,day,p.number)]);
  });
  persist();
