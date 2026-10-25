@@ -31,6 +31,7 @@ main{max-width:1600px;margin:22px auto;padding:0 14px}
 .day-board .class-name,.day-board .period-label{font-weight:bold;white-space:nowrap;position:sticky;left:0;background:#fff;z-index:1;min-width:120px}
 .day-board .cell-stack{display:flex;flex-direction:column;gap:4px;min-width:130px}
 .day-board select{width:100%;padding:5px;font-size:12px}
+.day-board select option:disabled{color:#94a3b8}
 .panel{display:none;background:white;border-radius:12px;padding:22px;margin-bottom:20px;box-shadow:0 3px 12px #0000000b}
 .panel.active{display:block}
 h2{margin-top:0}
@@ -2588,25 +2589,36 @@ function teacherBusyDifferentYear(classIndex,day,period,teacherName){
  return findDifferentYearTeacherClash(classIndex,day,period,teacherName).length>0;
 }
 
-function resolveTeacherForSubject(classIndex,subject,day,period){
- if(!subject) return "";
- const named=subject.teachers.filter(t=>t.name.trim());
- const isFree=t=>!teacherBusyDifferentYear(classIndex,day,period,t.name);
- const preferred=getClassTeacherId(classIndex,subject.id);
- const preferredTeacher=preferred?teacherById(subject,preferred):null;
- if(preferredTeacher&&String(preferredTeacher.name||"").trim()&&isFree(preferredTeacher)){
-  return preferred;
- }
- if(named.length===1&&isFree(named[0])) return named[0].id;
- const free=named.find(isFree);
- return free?free.id:"";
+function classTeacherForSubject(classIndex,subject){
+ if(!subject) return null;
+ const preferredId=getClassTeacherId(classIndex,subject.id);
+ const preferred=preferredId?teacherById(subject,preferredId):null;
+ if(preferred&&String(preferred.name||"").trim()) return preferred;
+ const named=(subject.teachers||[]).filter(t=>String(t.name||"").trim());
+ if(named.length===1) return named[0];
+ return null;
 }
 
-function subjectHasFreeTeacher(classIndex,day,period,subject,keepTeacherId){
- const named=(subject.teachers||[]).filter(t=>t.name.trim());
- if(!named.length) return false;
- return named.some(t=>
-  t.id===keepTeacherId||!teacherBusyDifferentYear(classIndex,day,period,t.name)
+function resolveTeacherForSubject(classIndex,subject,day,period){
+ // Only use this class’s chosen teacher (or the sole teacher). Never swap in someone else.
+ const intended=classTeacherForSubject(classIndex,subject);
+ if(!intended) return "";
+ if(teacherBusyDifferentYear(classIndex,day,period,intended.name)) return "";
+ return intended.id;
+}
+
+function subjectBlockedByYearClash(classIndex,day,period,subject,keepTeacherId){
+ if(!subject) return true;
+ const intended=classTeacherForSubject(classIndex,subject);
+ if(intended){
+  if(keepTeacherId&&intended.id===keepTeacherId) return false;
+  return teacherBusyDifferentYear(classIndex,day,period,intended.name);
+ }
+ // No class teacher set yet: block only if every teacher on the subject is busy.
+ const named=(subject.teachers||[]).filter(t=>String(t.name||"").trim());
+ if(!named.length) return true;
+ return named.every(t=>
+  t.id!==keepTeacherId&&teacherBusyDifferentYear(classIndex,day,period,t.name)
  );
 }
 
@@ -2616,10 +2628,11 @@ function fillTeacherSelect(teacherSelect,subjectId,selectedTeacherId,classIndex,
  if(subject){
   subject.teachers.filter(t=>t.name.trim()).forEach(teacher=>{
    const busy=teacherBusyDifferentYear(classIndex,day,period,teacher.name);
+   const keepCurrent=teacher.id===selectedTeacherId;
    const option=document.createElement("option");
    option.value=teacher.id;
-   option.textContent=teacher.name+(busy?" (other year)":"");
-   option.disabled=busy&&teacher.id!==selectedTeacherId;
+   option.textContent=teacher.name+(busy&&!keepCurrent?" (other year)":"");
+   option.disabled=busy&&!keepCurrent;
    teacherSelect.appendChild(option);
   });
  }
@@ -2792,11 +2805,11 @@ function renderEditor(){
     const count=getLessonCount(ci,subject.id);
     const limit=getYearLimit(ci,subject.id);
     const isCurrent=subject.id===existing.subjectId;
-    const noFreeTeacher=!subjectHasFreeTeacher(ci,day,period.number,subject,isCurrent?existing.teacherId:"");
+    const yearBusy=subjectBlockedByYearClash(ci,day,period.number,subject,isCurrent?existing.teacherId:"");
     const option=document.createElement("option");
     option.value=subject.id;
-    option.textContent=subject.name+" ("+count+"/"+limit+")"+(isCurrent&&shared?" · shared":"")+(noFreeTeacher&&!isCurrent?" · busy":"");
-    option.disabled=(count>=limit&&!isCurrent)||(noFreeTeacher&&!isCurrent);
+    option.textContent=subject.name+" ("+count+"/"+limit+")"+(isCurrent&&shared?" · shared":"")+(yearBusy&&!isCurrent?" · other year":"");
+    option.disabled=(count>=limit&&!isCurrent)||(yearBusy&&!isCurrent);
     subjectSelect.appendChild(option);
    });
    subjectSelect.value=existing.subjectId||"";
