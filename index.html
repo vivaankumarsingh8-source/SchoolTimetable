@@ -2584,29 +2584,51 @@ function setClassTeacherId(classIndex,subjectId,teacherId){
  data.classTeachers[key][subjectId]=teacherId;
 }
 
-function resolveTeacherForSubject(classIndex,subject){
- if(!subject) return "";
- const preferred=getClassTeacherId(classIndex,subject.id);
- const preferredTeacher=preferred?teacherById(subject,preferred):null;
- if(preferredTeacher&&String(preferredTeacher.name||"").trim()) return preferred;
- const named=subject.teachers.filter(t=>t.name.trim());
- if(named.length===1) return named[0].id;
- return "";
+function teacherBusyDifferentYear(classIndex,day,period,teacherName){
+ return findDifferentYearTeacherClash(classIndex,day,period,teacherName).length>0;
 }
 
-function fillTeacherSelect(teacherSelect,subjectId,selectedTeacherId){
+function resolveTeacherForSubject(classIndex,subject,day,period){
+ if(!subject) return "";
+ const named=subject.teachers.filter(t=>t.name.trim());
+ const isFree=t=>!teacherBusyDifferentYear(classIndex,day,period,t.name);
+ const preferred=getClassTeacherId(classIndex,subject.id);
+ const preferredTeacher=preferred?teacherById(subject,preferred):null;
+ if(preferredTeacher&&String(preferredTeacher.name||"").trim()&&isFree(preferredTeacher)){
+  return preferred;
+ }
+ if(named.length===1&&isFree(named[0])) return named[0].id;
+ const free=named.find(isFree);
+ return free?free.id:"";
+}
+
+function subjectHasFreeTeacher(classIndex,day,period,subject,keepTeacherId){
+ const named=(subject.teachers||[]).filter(t=>t.name.trim());
+ if(!named.length) return false;
+ return named.some(t=>
+  t.id===keepTeacherId||!teacherBusyDifferentYear(classIndex,day,period,t.name)
+ );
+}
+
+function fillTeacherSelect(teacherSelect,subjectId,selectedTeacherId,classIndex,day,period){
  teacherSelect.innerHTML='<option value="">— Teacher —</option>';
  const subject=subjectById(subjectId);
  if(subject){
   subject.teachers.filter(t=>t.name.trim()).forEach(teacher=>{
+   const busy=teacherBusyDifferentYear(classIndex,day,period,teacher.name);
    const option=document.createElement("option");
    option.value=teacher.id;
-   option.textContent=teacher.name;
+   option.textContent=teacher.name+(busy?" (other year)":"");
+   option.disabled=busy&&teacher.id!==selectedTeacherId;
    teacherSelect.appendChild(option);
   });
  }
  teacherSelect.disabled=!subjectId;
- teacherSelect.value=selectedTeacherId||"";
+ if(selectedTeacherId&&[...teacherSelect.options].some(o=>o.value===selectedTeacherId&&!o.disabled)){
+  teacherSelect.value=selectedTeacherId;
+ }else{
+  teacherSelect.value="";
+ }
 }
 
 function renderClassTeacherDefaults(ci){
@@ -2702,14 +2724,8 @@ function trySaveLesson(ci,day,periodNumber,subjectId,teacherId){
  }
 
  const teacherName=teacherById(subject,teacherId).name;
- const yearClashes=findDifferentYearTeacherClash(ci,day,periodNumber,teacherName);
- if(yearClashes.length){
-  return {
-   ok:false,
-   error:teacherName+" is already teaching at this time in a different year:\n\n"+
-    yearClashes.map(c=>c.name+" (Year "+c.year+")").join("\n")+
-    "\n\nA teacher can only cover two classes at once if they are in the same year."
-  };
+ if(teacherBusyDifferentYear(ci,day,periodNumber,teacherName)){
+  return {ok:false,silent:true};
  }
 
  data.lessons[k]={subjectId,teacherId};
@@ -2776,17 +2792,18 @@ function renderEditor(){
     const count=getLessonCount(ci,subject.id);
     const limit=getYearLimit(ci,subject.id);
     const isCurrent=subject.id===existing.subjectId;
+    const noFreeTeacher=!subjectHasFreeTeacher(ci,day,period.number,subject,isCurrent?existing.teacherId:"");
     const option=document.createElement("option");
     option.value=subject.id;
-    option.textContent=subject.name+" ("+count+"/"+limit+")"+(isCurrent&&shared?" · shared":"");
-    option.disabled=(count>=limit&&!isCurrent);
+    option.textContent=subject.name+" ("+count+"/"+limit+")"+(isCurrent&&shared?" · shared":"")+(noFreeTeacher&&!isCurrent?" · busy":"");
+    option.disabled=(count>=limit&&!isCurrent)||(noFreeTeacher&&!isCurrent);
     subjectSelect.appendChild(option);
    });
    subjectSelect.value=existing.subjectId||"";
 
    const teacherSelect=document.createElement("select");
    teacherSelect.setAttribute("aria-label",classObj.name+" "+day+" period "+period.number+" teacher");
-   fillTeacherSelect(teacherSelect,existing.subjectId,existing.teacherId);
+   fillTeacherSelect(teacherSelect,existing.subjectId,existing.teacherId,ci,day,period.number);
 
    function applySave(subjectId,teacherId){
     const result=trySaveLesson(ci,day,period.number,subjectId,teacherId);
@@ -2805,8 +2822,8 @@ function renderEditor(){
     }
     const subject=subjectById(subjectSelect.value);
     if(!subject) return;
-    const teacherId=resolveTeacherForSubject(ci,subject);
-    fillTeacherSelect(teacherSelect,subject.id,teacherId);
+    const teacherId=resolveTeacherForSubject(ci,subject,day,period.number);
+    fillTeacherSelect(teacherSelect,subject.id,teacherId,ci,day,period.number);
     if(teacherId) applySave(subject.id,teacherId);
    });
 
