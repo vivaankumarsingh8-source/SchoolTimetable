@@ -222,8 +222,9 @@ A teacher can only teach two classes at the same time if those classes are in th
 </div>
 </div>
 
-<p class="muted" style="margin-top:12px">One class at a time, with Monday–Friday shown together. Edit any period cell directly.</p>
+<p class="muted" style="margin-top:12px">One class at a time, with Monday–Friday shown together. Set this class’s teachers below, then pick subjects in the week grid — the teacher fills in automatically.</p>
 
+<div id="classTeacherDefaults"></div>
 <div class="table-wrap" id="periodEditor"></div>
 <div id="editorMessage"></div>
 
@@ -276,7 +277,7 @@ function getWriteToken(){
  }
 }
 
-const SCHEMA_VERSION=18;
+const SCHEMA_VERSION=19;
 const LOCAL_BACKUP_KEY="schoolTimetableLocalBackupV1";
 const PASS_AVERAGE=4;
 const GRADE_SCALE=[
@@ -849,9 +850,31 @@ function makeDefaultData(){
   students:makeDefaultStudents(classes),
   tests:[],
   detentions:[],
+  classTeachers:{},
   lessons:{},
   exceptions:[]
  };
+}
+
+function normaliseClassTeachers(raw,classes,subjects){
+ const result={};
+ if(!raw||typeof raw!=="object"||Array.isArray(raw)) return result;
+ const byId=new Map((subjects||[]).map(s=>[s.id,s]));
+ for(let ci=0;ci<(classes||[]).length;ci++){
+  const src=raw[ci]||raw[String(ci)];
+  if(!src||typeof src!=="object"||Array.isArray(src)) continue;
+  const map={};
+  Object.keys(src).forEach(subjectId=>{
+   const subject=byId.get(subjectId);
+   if(!subject) return;
+   const teacherId=String(src[subjectId]||"");
+   const teacher=(subject.teachers||[]).find(t=>t.id===teacherId&&String(t.name||"").trim());
+   if(!teacher) return;
+   map[subjectId]=teacherId;
+  });
+  if(Object.keys(map).length) result[String(ci)]=map;
+ }
+ return result;
 }
 
 function normaliseDetention(d,studentIds){
@@ -953,6 +976,7 @@ function normaliseData(raw){
   students:raw.students,
   tests:raw.tests,
   detentions:raw.detentions,
+  classTeachers:raw.classTeachers,
   lessons:raw.lessons,
   exceptions:raw.exceptions
  };
@@ -969,6 +993,9 @@ function normaliseData(raw){
  if(!Array.isArray(next.students)) next.students=[];
  if(!Array.isArray(next.tests)) next.tests=[];
  if(!Array.isArray(next.detentions)) next.detentions=[];
+ if(!next.classTeachers||typeof next.classTeachers!=="object"||Array.isArray(next.classTeachers)){
+  next.classTeachers={};
+ }
  if(!next.lessons||typeof next.lessons!=="object"||Array.isArray(next.lessons)) next.lessons={};
  if(!Array.isArray(next.exceptions)) next.exceptions=[];
 
@@ -1050,6 +1077,7 @@ function normaliseData(raw){
 
  const studentIds=new Set(next.students.map(s=>s.id));
  next.detentions=next.detentions.map(d=>normaliseDetention(d,studentIds)).filter(Boolean);
+ next.classTeachers=normaliseClassTeachers(next.classTeachers,next.classes,next.subjects);
 
  return next;
 }
@@ -2531,6 +2559,7 @@ document.getElementById("saveSubjects").addEventListener("click",()=>{
 
  data.subjects=proposed;
  syncSubjectTeacherCounts(data.subjects,data.classes,data.lessons);
+ data.classTeachers=normaliseClassTeachers(data.classTeachers,data.classes,data.subjects);
  persist();
  renderSubjects();
  renderEditor();
@@ -2538,6 +2567,33 @@ document.getElementById("saveSubjects").addEventListener("click",()=>{
 });
 
 // Timetable editor — one class, all five days
+function getClassTeacherId(classIndex,subjectId){
+ const map=data.classTeachers&&data.classTeachers[String(classIndex)];
+ return map&&map[subjectId]?map[subjectId]:"";
+}
+
+function setClassTeacherId(classIndex,subjectId,teacherId){
+ if(!data.classTeachers||typeof data.classTeachers!=="object") data.classTeachers={};
+ const key=String(classIndex);
+ if(!data.classTeachers[key]||typeof data.classTeachers[key]!=="object") data.classTeachers[key]={};
+ if(!teacherId){
+  delete data.classTeachers[key][subjectId];
+  if(!Object.keys(data.classTeachers[key]).length) delete data.classTeachers[key];
+  return;
+ }
+ data.classTeachers[key][subjectId]=teacherId;
+}
+
+function resolveTeacherForSubject(classIndex,subject){
+ if(!subject) return "";
+ const preferred=getClassTeacherId(classIndex,subject.id);
+ const preferredTeacher=preferred?teacherById(subject,preferred):null;
+ if(preferredTeacher&&String(preferredTeacher.name||"").trim()) return preferred;
+ const named=subject.teachers.filter(t=>t.name.trim());
+ if(named.length===1) return named[0].id;
+ return "";
+}
+
 function fillTeacherSelect(teacherSelect,subjectId,selectedTeacherId){
  teacherSelect.innerHTML='<option value="">— Teacher —</option>';
  const subject=subjectById(subjectId);
@@ -2551,6 +2607,66 @@ function fillTeacherSelect(teacherSelect,subjectId,selectedTeacherId){
  }
  teacherSelect.disabled=!subjectId;
  teacherSelect.value=selectedTeacherId||"";
+}
+
+function renderClassTeacherDefaults(ci){
+ const box=document.getElementById("classTeacherDefaults");
+ if(!box) return;
+ const classObj=data.classes[ci];
+ if(!classObj){
+  box.innerHTML="";
+  return;
+ }
+
+ const subjects=(data.subjects||[])
+  .filter(s=>s.name.trim()&&getYearLimit(ci,s.id)>0)
+  .slice()
+  .sort((a,b)=>a.name.localeCompare(b.name));
+
+ if(!subjects.length){
+  box.innerHTML='<div class="notice"><strong>Teachers for '+esc(classObj.name)+
+   '</strong><p class="muted" style="margin:8px 0 0">No subjects have a weekly limit for this class yet.</p></div>';
+  return;
+ }
+
+ box.innerHTML=
+  '<div class="notice">'+
+   '<strong>Teachers for '+esc(classObj.name)+'</strong>'+
+   '<p class="muted" style="margin:8px 0 12px">Choose who teaches each subject for this class. When you add a lesson below, that teacher is picked automatically.</p>'+
+   '<div class="limits-grid" id="classTeacherGrid"></div>'+
+  '</div>';
+
+ const grid=document.getElementById("classTeacherGrid");
+ subjects.forEach(subject=>{
+  const field=document.createElement("div");
+  field.className="limit-field";
+  const label=document.createElement("label");
+  label.setAttribute("for","classTeacher-"+subject.id);
+  label.textContent=subject.name;
+  const select=document.createElement("select");
+  select.id="classTeacher-"+subject.id;
+  select.setAttribute("aria-label","Teacher for "+subject.name+" in "+classObj.name);
+  select.innerHTML='<option value="">— Choose teacher —</option>';
+  const named=subject.teachers.filter(t=>t.name.trim());
+  named.forEach(teacher=>{
+   const option=document.createElement("option");
+   option.value=teacher.id;
+   option.textContent=teacher.name;
+   select.appendChild(option);
+  });
+  let current=getClassTeacherId(ci,subject.id);
+  if(current&&!named.some(t=>t.id===current)) current="";
+  if(!current&&named.length===1) current=named[0].id;
+  select.value=current||"";
+  select.disabled=named.length===0;
+  select.addEventListener("change",()=>{
+   setClassTeacherId(ci,subject.id,select.value);
+   persist();
+  });
+  field.appendChild(label);
+  field.appendChild(select);
+  grid.appendChild(field);
+ });
 }
 
 function trySaveLesson(ci,day,periodNumber,subjectId,teacherId){
@@ -2610,6 +2726,8 @@ function renderEditor(){
 
  if(!classObj){
   container.innerHTML='<p class="empty">No class selected.</p>';
+  const defaults=document.getElementById("classTeacherDefaults");
+  if(defaults) defaults.innerHTML="";
   document.getElementById("editorMessage").innerHTML="";
   return;
  }
@@ -2687,9 +2805,9 @@ function renderEditor(){
     }
     const subject=subjectById(subjectSelect.value);
     if(!subject) return;
-    const namedTeachers=subject.teachers.filter(t=>t.name.trim());
-    fillTeacherSelect(teacherSelect,subject.id,namedTeachers.length===1?namedTeachers[0].id:"");
-    if(namedTeachers.length===1) applySave(subject.id,namedTeachers[0].id);
+    const teacherId=resolveTeacherForSubject(ci,subject);
+    fillTeacherSelect(teacherSelect,subject.id,teacherId);
+    if(teacherId) applySave(subject.id,teacherId);
    });
 
    teacherSelect.addEventListener("change",()=>{
@@ -2698,6 +2816,8 @@ function renderEditor(){
      applySave("","");
      return;
     }
+    // Remember this teacher as the class default for that subject.
+    setClassTeacherId(ci,subjectSelect.value,teacherSelect.value);
     applySave(subjectSelect.value,teacherSelect.value);
    });
 
@@ -2712,6 +2832,7 @@ function renderEditor(){
 
  table.appendChild(tbody);
  container.appendChild(table);
+ renderClassTeacherDefaults(ci);
  renderEditorMessage(ci);
 }
 
