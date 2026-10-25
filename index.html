@@ -180,16 +180,15 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 <section id="subjects" class="panel">
 <h2>Subjects, teachers and year limits</h2>
 <p class="muted">
-Create each subject once. Add all the teachers who can teach it.
-Teacher names must be unique across every subject.
-Teacher counts are kept to the minimum needed if each teacher takes 25 lessons a week.
+Create each subject once. Add or remove teachers as you like — names must be unique across every subject.
+Each teacher can take up to 25 lessons a week. From that, every subject gets a calculated limit for how many classes one teacher may cover (you can override it per subject).
 Then set how many lessons per week each year or profile group is allowed to have.
 Years 1–5 share one limit; Year 6 and Year 7 are separate; Years 8–10 use profile limits (General Stuff 8/10, Spells 8/10, etc.).
 </p>
 
 <div class="notice">
-<strong>Example:</strong> Potions can be 3 for Years 1–5 and 6 for General Stuff 8/10.
-Every Years 1–5 class can have up to 3 Potions lessons per week, while General Stuff classes in Years 8–10 can have up to 6.
+<strong>Example:</strong> Potions at 3 lessons/week for Years 1–5 means one teacher can cover floor(25÷3) = 8 classes.
+If weekly limits total 80 lessons across the school, you need at least ceil(80÷25) = 4 teachers. Save keeps at least that many; you can always add more.
 </div>
 
 <div id="subjectFields"></div>
@@ -278,7 +277,7 @@ function getWriteToken(){
  }
 }
 
-const SCHEMA_VERSION=19;
+const SCHEMA_VERSION=20;
 const LOCAL_BACKUP_KEY="schoolTimetableLocalBackupV1";
 const PASS_AVERAGE=4;
 const GRADE_SCALE=[
@@ -397,6 +396,59 @@ function minTeachersForLessons(totalLessons){
  return Math.ceil(totalLessons/LESSONS_PER_TEACHER);
 }
 
+function maxLessonsPerClassForSubject(subject){
+ let max=0;
+ for(let year=1;year<=7;year++){
+  const n=Number(subject&&subject.limits&&subject.limits[year]);
+  if(Number.isInteger(n)&&n>max) max=n;
+ }
+ PROFILES.forEach(p=>{
+  const n=Number(subject&&subject.limits&&subject.limits[p.name]);
+  if(Number.isInteger(n)&&n>max) max=n;
+ });
+ return max;
+}
+
+function calculatedClassesPerTeacher(subject){
+ const perClass=maxLessonsPerClassForSubject(subject);
+ if(perClass<=0) return 0;
+ return Math.floor(LESSONS_PER_TEACHER/perClass);
+}
+
+function normaliseTeacherClassLimit(value){
+ if(value==null||value==="") return 0;
+ const n=Number(value);
+ if(!Number.isInteger(n)||n<0||n>200) return 0;
+ return n;
+}
+
+function effectiveClassesPerTeacher(subject){
+ const custom=normaliseTeacherClassLimit(subject&&subject.teacherClassLimit);
+ if(custom>0) return custom;
+ return calculatedClassesPerTeacher(subject);
+}
+
+function classesTaughtByTeacher(subjectId,teacherId){
+ const classes=new Set();
+ if(!subjectId||!teacherId) return classes;
+ Object.entries(data.classTeachers||{}).forEach(([ci,map])=>{
+  if(map&&map[subjectId]===teacherId) classes.add(Number(ci));
+ });
+ Object.entries(data.lessons||{}).forEach(([k,lesson])=>{
+  if(!lesson||lesson.subjectId!==subjectId||lesson.teacherId!==teacherId) return;
+  classes.add(Number(String(k).split("|")[0]));
+ });
+ return classes;
+}
+
+function teacherAtClassLimit(subject,teacherId,exceptClassIndex){
+ const limit=effectiveClassesPerTeacher(subject);
+ if(limit<=0||!teacherId) return false;
+ const taught=classesTaughtByTeacher(subject.id,teacherId);
+ if(exceptClassIndex!=null) taught.delete(Number(exceptClassIndex));
+ return taught.size>=limit;
+}
+
 function makeDefaultClasses(){
  const classes=[];
  HOUSES.forEach(house=>{
@@ -471,17 +523,11 @@ function syncSubjectTeacherCounts(subjects,classes,lessons){
   const need=minTeachersForLessons(totalLimitLessonsForSubject(subject,classes));
   const teachers=Array.isArray(subject.teachers)?subject.teachers.slice():[];
 
+  // Only drop blank extra slots — named teachers the user added are kept.
   while(teachers.length>need){
-   const removable=teachers.map((t,i)=>({t,i})).reverse().find(({t})=>{
-    if(!String(t.name||"").trim()) return true;
-    return !Object.values(lessonMap).some(l=>
-     l&&l.subjectId===subject.id&&l.teacherId===t.id
-    );
-   });
+   const removable=teachers.map((t,i)=>({t,i})).reverse().find(({t})=>!String(t.name||"").trim());
    if(!removable) break;
-   const removed=teachers.splice(removable.i,1)[0];
-   const n=String(removed.name||"").trim().toLowerCase();
-   if(n) usedNames.delete(n);
+   teachers.splice(removable.i,1);
   }
 
   while(teachers.length<need){
@@ -489,6 +535,7 @@ function syncSubjectTeacherCounts(subjects,classes,lessons){
   }
 
   subject.teachers=teachers;
+  subject.teacherClassLimit=normaliseTeacherClassLimit(subject.teacherClassLimit);
  });
  return subjects;
 }
@@ -1013,7 +1060,8 @@ function normaliseData(raw){
   teachers:Array.isArray(s.teachers)?s.teachers.map(t=>
    typeof t==="string"?{id:makeId(),name:t}:{id:t.id||makeId(),name:t.name||""}
   ):[],
-  limits:normaliseLimits(s.limits)
+  limits:normaliseLimits(s.limits),
+  teacherClassLimit:normaliseTeacherClassLimit(s.teacherClassLimit)
  }));
 
  // Ensure new default subjects exist (e.g. G Spells / M Defence).
@@ -1441,18 +1489,24 @@ function renderSubjectLimitsOverview(){
 
  const rows=data.subjects.map(subject=>{
   const name=subject.name.trim()||"(unnamed subject)";
-  let total=0;
-  data.classes.forEach(c=>{
-   const limit=limitForClass(subject,c);
-   if(limit>0) total+=limit;
-  });
-  return '<tr><td>'+esc(name)+'</td><td>'+total+'</td></tr>';
+  const total=totalLimitLessonsForSubject(subject,data.classes);
+  const teachersNeeded=minTeachersForLessons(total);
+  const calcClasses=calculatedClassesPerTeacher(subject);
+  const effective=effectiveClassesPerTeacher(subject);
+  const custom=normaliseTeacherClassLimit(subject.teacherClassLimit);
+  const classLimitLabel=custom>0
+   ? effective+" (custom; calculated "+calcClasses+")"
+   : String(effective||"—");
+  return '<tr><td>'+esc(name)+'</td><td>'+total+'</td><td>'+teachersNeeded+
+   '</td><td>'+esc(classLimitLabel)+'</td></tr>';
  }).join("");
 
  container.innerHTML=
-  '<h3 style="margin-top:24px">Subject totals</h3>'+
-  '<p class="muted">For each subject, the weekly limits of every class that takes it are added together.</p>'+
-  '<div class="table-wrap"><table><thead><tr><th>Subject</th><th>Total lessons per week (all classes)</th></tr></thead><tbody>'+
+  '<h3 style="margin-top:24px">Subject totals & teacher load</h3>'+
+  '<p class="muted">Totals use each class’s weekly limit. Teachers needed assumes '+LESSONS_PER_TEACHER+
+  ' lessons per teacher per week. Classes per teacher is floor('+LESSONS_PER_TEACHER+
+  ' ÷ highest weekly limit for that subject), unless you set a custom limit.</p>'+
+  '<div class="table-wrap"><table><thead><tr><th>Subject</th><th>Total lessons/week</th><th>Teachers needed</th><th>Classes per teacher</th></tr></thead><tbody>'+
   rows+
   '</tbody></table></div>';
 }
@@ -2343,13 +2397,20 @@ function renderSubjects(){
   card.dataset.subjectId=subject.id;
 
   const namedTeachers=subject.teachers.filter(t=>String(t.name||"").trim()).length;
-  const teacherRows=subject.teachers.map((teacher,teacherIndex)=>
-   '<div class="teacher-row">'+
-    '<div><label for="teacher_'+index+'_'+teacherIndex+'">Teacher '+(teacherIndex+1)+'</label>'+
+  const totalLessons=totalLimitLessonsForSubject(subject,data.classes);
+  const teachersNeeded=minTeachersForLessons(totalLessons);
+  const calcClasses=calculatedClassesPerTeacher(subject);
+  const effectiveClasses=effectiveClassesPerTeacher(subject);
+  const teacherRows=subject.teachers.map((teacher,teacherIndex)=>{
+   const taught=classesTaughtByTeacher(subject.id,teacher.id).size;
+   return '<div class="teacher-row">'+
+    '<div><label for="teacher_'+index+'_'+teacherIndex+'">Teacher '+(teacherIndex+1)+
+    (String(teacher.name||"").trim()?' <span class="muted">('+taught+'/'+effectiveClasses+' classes)</span>':'')+
+    '</label>'+
     '<input id="teacher_'+index+'_'+teacherIndex+'" maxlength="80" value="'+esc(teacher.name)+'" placeholder="Teacher name"></div>'+
     '<button type="button" class="danger removeTeacher" data-subject="'+index+'" data-teacher="'+teacherIndex+'">Remove</button>'+
-   '</div>'
-  ).join("");
+   '</div>';
+  }).join("");
 
   const limitFields=YEAR_LIMIT_GROUPS.map(group=>
    '<div class="limit-field"><label for="limit_'+index+'_'+group.id+'">'+group.label+'</label>'+
@@ -2361,7 +2422,9 @@ function renderSubjects(){
    '<div class="subject-summary">'+
     '<button type="button" class="toggle-subject" data-id="'+esc(subject.id)+'" aria-expanded="'+(isOpen?"true":"false")+'">'+(isOpen?"▾":"▸")+'</button>'+
     '<div class="subject-title">'+(esc(subject.name)||("Subject "+(index+1)))+'</div>'+
-    '<div class="subject-meta">'+namedTeachers+" teacher"+(namedTeachers===1?"":"s")+(isOpen?"":" · click to open")+'</div>'+
+    '<div class="subject-meta">'+namedTeachers+" teacher"+(namedTeachers===1?"":"s")+
+     ' · ≤'+effectiveClasses+' classes each'+
+     (isOpen?"":" · click to open")+'</div>'+
    '</div>'+
    '<div class="subject-body">'+
     '<div class="subject-heading">'+
@@ -2370,7 +2433,22 @@ function renderSubjects(){
      '<div><label>Subject ID</label><input value="'+esc(subject.name||("Subject "+(index+1)))+'" disabled></div>'+
     '</div>'+
     '<h3>Teachers for this subject</h3>'+
-    '<p class="muted">Add every teacher who can teach this subject. You can choose the teacher separately for each lesson.</p>'+
+    '<p class="muted">Add or remove teachers anytime. Save keeps at least the number needed for '+LESSONS_PER_TEACHER+
+    ' lessons each per week; extra teachers you add are kept.</p>'+
+    '<div class="notice" style="margin:12px 0">'+
+     '<strong>Teacher load</strong><br>'+
+     'Total lessons/week: <strong>'+totalLessons+'</strong> · '+
+     'Teachers needed: <strong>'+teachersNeeded+'</strong> · '+
+     'Calculated classes per teacher: <strong>'+(calcClasses||"—")+'</strong>'+
+     (calcClasses?' (floor('+LESSONS_PER_TEACHER+' ÷ '+maxLessonsPerClassForSubject(subject)+' lessons/class))':'')+
+    '</div>'+
+    '<div class="limit-field" style="max-width:280px;margin-bottom:12px">'+
+     '<label for="teacherClassLimit'+index+'">Classes per teacher (custom)</label>'+
+     '<input type="number" min="0" max="200" step="1" id="teacherClassLimit'+index+
+     '" value="'+(normaliseTeacherClassLimit(subject.teacherClassLimit)||"")+
+     '" placeholder="Calculated: '+(calcClasses||0)+'">'+
+     '<p class="muted" style="margin:6px 0 0">Leave blank or 0 to use the calculated limit ('+(calcClasses||0)+').</p>'+
+    '</div>'+
     '<div class="teacher-list">'+teacherRows+'</div>'+
     '<button type="button" class="addTeacher" data-index="'+index+'">+ Add teacher</button>'+
     '<h3>Maximum lessons per class per week</h3>'+
@@ -2478,11 +2556,21 @@ function collectSubjectInputs(validate){
    return null;
   }
 
+  const classLimitInput=document.getElementById("teacherClassLimit"+i);
+  const teacherClassLimit=normaliseTeacherClassLimit(classLimitInput?classLimitInput.value:original.teacherClassLimit);
+  if(classLimitInput&&classLimitInput.value.trim()!==""&&teacherClassLimit===0&&Number(classLimitInput.value)!==0){
+   if(validate){
+    showMessage("subjectMessage","Classes per teacher must be a whole number from 0 to 200.","warning");
+    return null;
+   }
+  }
+
   proposed.push({
    id:original.id,
    name:subjectName,
    teachers,
-   limits
+   limits,
+   teacherClassLimit
   });
  }
 
@@ -2546,7 +2634,8 @@ document.getElementById("addSubject").addEventListener("click",()=>{
   id:makeId(),
   name:"",
   teachers:[],
-  limits:emptyLimits()
+  limits:emptyLimits(),
+  teacherClassLimit:0
  };
  data.subjects.push(newSubject);
  expandedSubjectIds.add(newSubject.id);
@@ -2564,7 +2653,7 @@ document.getElementById("saveSubjects").addEventListener("click",()=>{
  persist();
  renderSubjects();
  renderEditor();
- showMessage("subjectMessage","Subjects, teacher lists and year limits saved successfully. Teachers adjusted to at least 1 per 25 weekly lessons.","success");
+ showMessage("subjectMessage","Subjects, teachers and limits saved. Teacher count kept to at least 1 per "+LESSONS_PER_TEACHER+" weekly lessons.","success");
 });
 
 // Timetable editor — one class, all five days
@@ -2604,35 +2693,44 @@ function resolveTeacherForSubject(classIndex,subject,day,period){
  const intended=classTeacherForSubject(classIndex,subject);
  if(!intended) return "";
  if(teacherBusyDifferentYear(classIndex,day,period,intended.name)) return "";
+ if(teacherAtClassLimit(subject,intended.id,classIndex)) return "";
  return intended.id;
 }
 
-function subjectBlockedByYearClash(classIndex,day,period,subject,keepTeacherId){
+function subjectBlockedAtSlot(classIndex,day,period,subject,keepTeacherId){
  if(!subject) return true;
  const intended=classTeacherForSubject(classIndex,subject);
  if(intended){
   if(keepTeacherId&&intended.id===keepTeacherId) return false;
-  return teacherBusyDifferentYear(classIndex,day,period,intended.name);
+  if(teacherBusyDifferentYear(classIndex,day,period,intended.name)) return true;
+  return teacherAtClassLimit(subject,intended.id,classIndex);
  }
- // No class teacher set yet: block only if every teacher on the subject is busy.
+ // No class teacher set yet: block only if every teacher is unavailable.
  const named=(subject.teachers||[]).filter(t=>String(t.name||"").trim());
  if(!named.length) return true;
- return named.every(t=>
-  t.id!==keepTeacherId&&teacherBusyDifferentYear(classIndex,day,period,t.name)
- );
+ return named.every(t=>{
+  if(t.id===keepTeacherId) return false;
+  return teacherBusyDifferentYear(classIndex,day,period,t.name)||
+   teacherAtClassLimit(subject,t.id,classIndex);
+ });
 }
 
 function fillTeacherSelect(teacherSelect,subjectId,selectedTeacherId,classIndex,day,period){
  teacherSelect.innerHTML='<option value="">— Teacher —</option>';
  const subject=subjectById(subjectId);
  if(subject){
+  const classLimit=effectiveClassesPerTeacher(subject);
   subject.teachers.filter(t=>t.name.trim()).forEach(teacher=>{
    const busy=teacherBusyDifferentYear(classIndex,day,period,teacher.name);
    const keepCurrent=teacher.id===selectedTeacherId;
+   const atClassLimit=!keepCurrent&&teacherAtClassLimit(subject,teacher.id,classIndex);
    const option=document.createElement("option");
    option.value=teacher.id;
-   option.textContent=teacher.name+(busy&&!keepCurrent?" (other year)":"");
-   option.disabled=busy&&!keepCurrent;
+   let label=teacher.name;
+   if(busy&&!keepCurrent) label+=" (other year)";
+   else if(atClassLimit) label+=" (class limit "+classLimit+")";
+   option.textContent=label;
+   option.disabled=(busy||atClassLimit)&&!keepCurrent;
    teacherSelect.appendChild(option);
   });
  }
@@ -2683,20 +2781,36 @@ function renderClassTeacherDefaults(ci){
   select.setAttribute("aria-label","Teacher for "+subject.name+" in "+classObj.name);
   select.innerHTML='<option value="">— Choose teacher —</option>';
   const named=subject.teachers.filter(t=>t.name.trim());
+  const classLimit=effectiveClassesPerTeacher(subject);
   named.forEach(teacher=>{
+   const taught=classesTaughtByTeacher(subject.id,teacher.id);
+   taught.delete(ci);
+   const atLimit=classLimit>0&&taught.size>=classLimit;
    const option=document.createElement("option");
    option.value=teacher.id;
-   option.textContent=teacher.name;
+   option.textContent=teacher.name+(atLimit?" (class limit "+classLimit+")":"");
+   option.disabled=atLimit;
    select.appendChild(option);
   });
   let current=getClassTeacherId(ci,subject.id);
   if(current&&!named.some(t=>t.id===current)) current="";
-  if(!current&&named.length===1) current=named[0].id;
+  if(!current&&named.length===1&&![...select.options].find(o=>o.value===named[0].id&&o.disabled)){
+   current=named[0].id;
+  }
+  if(current&&[...select.options].some(o=>o.value===current&&o.disabled)) current="";
   select.value=current||"";
   select.disabled=named.length===0;
   select.addEventListener("change",()=>{
-   setClassTeacherId(ci,subject.id,select.value);
+   const teacherId=select.value;
+   if(teacherId&&teacherAtClassLimit(subject,teacherId,ci)){
+    select.value=getClassTeacherId(ci,subject.id)||"";
+    alert(teacherById(subject,teacherId).name+" already teaches the maximum of "+
+     effectiveClassesPerTeacher(subject)+" classes for "+subject.name+".");
+    return;
+   }
+   setClassTeacherId(ci,subject.id,teacherId);
    persist();
+   renderEditor();
   });
   field.appendChild(label);
   field.appendChild(select);
@@ -2739,6 +2853,15 @@ function trySaveLesson(ci,day,periodNumber,subjectId,teacherId){
  const teacherName=teacherById(subject,teacherId).name;
  if(teacherBusyDifferentYear(ci,day,periodNumber,teacherName)){
   return {ok:false,silent:true};
+ }
+
+ const alreadyInClass=classesTaughtByTeacher(subjectId,teacherId).has(ci);
+ if(!alreadyInClass&&teacherAtClassLimit(subject,teacherId,ci)){
+  return {
+   ok:false,
+   error:teacherName+" already teaches the maximum of "+
+    effectiveClassesPerTeacher(subject)+" classes for "+subject.name+"."
+  };
  }
 
  data.lessons[k]={subjectId,teacherId};
@@ -2805,11 +2928,11 @@ function renderEditor(){
     const count=getLessonCount(ci,subject.id);
     const limit=getYearLimit(ci,subject.id);
     const isCurrent=subject.id===existing.subjectId;
-    const yearBusy=subjectBlockedByYearClash(ci,day,period.number,subject,isCurrent?existing.teacherId:"");
+    const blocked=subjectBlockedAtSlot(ci,day,period.number,subject,isCurrent?existing.teacherId:"");
     const option=document.createElement("option");
     option.value=subject.id;
-    option.textContent=subject.name+" ("+count+"/"+limit+")"+(isCurrent&&shared?" · shared":"")+(yearBusy&&!isCurrent?" · other year":"");
-    option.disabled=(count>=limit&&!isCurrent)||(yearBusy&&!isCurrent);
+    option.textContent=subject.name+" ("+count+"/"+limit+")"+(isCurrent&&shared?" · shared":"")+(blocked&&!isCurrent?" · unavailable":"");
+    option.disabled=(count>=limit&&!isCurrent)||(blocked&&!isCurrent);
     subjectSelect.appendChild(option);
    });
    subjectSelect.value=existing.subjectId||"";
