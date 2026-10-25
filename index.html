@@ -98,15 +98,16 @@ footer{text-align:center;color:#667085;padding:20px;font-size:13px}
 
 <header>
 <h1>🏫 School Software</h1>
-<p>Classes · Students · Discipline · Subjects · Timetable</p>
+<p>Classes · Students · Discipline · Subjects · Teachers · Timetable</p>
 </header>
 
 <nav>
 <button class="active" data-tab="classes">1. Classes</button>
 <button data-tab="students">2. Students</button>
 <button data-tab="discipline">3. Discipline</button>
-<button data-tab="subjects">4. Subjects & Teachers</button>
-<button data-tab="editor">5. Timetable</button>
+<button data-tab="subjects">4. Subjects</button>
+<button data-tab="teachers">5. Teachers</button>
+<button data-tab="editor">6. Timetable</button>
 </nav>
 
 <main>
@@ -198,6 +199,20 @@ If weekly limits total 80 lessons across the school, you need at least ceil(80÷
 </div>
 <div id="subjectMessage"></div>
 <div id="subjectLimitsOverview"></div>
+</section>
+
+<section id="teachers" class="panel">
+<h2>Teacher schedules</h2>
+<p class="muted">Pick a teacher to see their week: every class and subject they teach in each period.</p>
+<div class="grid">
+<div>
+<label for="selectedTeacher">Teacher</label>
+<select id="selectedTeacher"></select>
+</div>
+</div>
+<div id="teacherScheduleSummary"></div>
+<div class="table-wrap" id="teacherScheduleBoard"></div>
+<div id="teacherScheduleList"></div>
 </section>
 
 <section id="editor" class="panel">
@@ -1196,6 +1211,7 @@ function refreshUiFromData(){
  renderStudents();
  renderDiscipline();
  renderSubjects();
+ renderTeacherSchedule();
  renderEditor();
 }
 
@@ -1619,6 +1635,7 @@ document.querySelectorAll("nav button").forEach(button=>{
   document.getElementById(button.dataset.tab).classList.add("active");
   if(button.dataset.tab==="editor") renderEditor();
   if(button.dataset.tab==="subjects") renderSubjectLimitsOverview();
+  if(button.dataset.tab==="teachers") renderTeacherSchedule();
   if(button.dataset.tab==="students") renderStudents();
   if(button.dataset.tab==="discipline") renderDiscipline();
  });
@@ -1690,6 +1707,135 @@ function allTeacherNames(){
  });
  return Array.from(names).sort((a,b)=>a.localeCompare(b));
 }
+
+function lessonsForTeacherName(teacherName){
+ const nameKey=String(teacherName||"").trim().toLowerCase();
+ if(!nameKey) return [];
+ const slots=[];
+ Object.entries(data.lessons||{}).forEach(([k,lesson])=>{
+  if(!lesson) return;
+  const parts=k.split("|");
+  const ci=Number(parts[0]);
+  const day=parts[1];
+  const period=Number(parts[2]);
+  if(!data.classes[ci]||DAYS.indexOf(day)<0||!Number.isInteger(period)) return;
+  const lessonTeacher=teacherNameFromIds(lesson.subjectId,lesson.teacherId).toLowerCase();
+  if(lessonTeacher!==nameKey) return;
+  const subject=subjectById(lesson.subjectId);
+  slots.push({
+   key:k,
+   ci,
+   day,
+   period,
+   classObj:data.classes[ci],
+   subjectName:subject&&subject.name?subject.name:"Unknown subject"
+  });
+ });
+ return slots.sort((a,b)=>{
+  const dayDiff=DAYS.indexOf(a.day)-DAYS.indexOf(b.day);
+  if(dayDiff) return dayDiff;
+  if(a.period!==b.period) return a.period-b.period;
+  return a.classObj.name.localeCompare(b.classObj.name);
+ });
+}
+
+function subjectsTaughtByTeacherName(teacherName){
+ const nameKey=String(teacherName||"").trim().toLowerCase();
+ const names=[];
+ (data.subjects||[]).forEach(s=>{
+  if(!(s.teachers||[]).some(t=>String(t.name||"").trim().toLowerCase()===nameKey)) return;
+  if(s.name&&s.name.trim()) names.push(s.name.trim());
+ });
+ return names.sort((a,b)=>a.localeCompare(b));
+}
+
+function renderTeacherSchedule(){
+ const select=document.getElementById("selectedTeacher");
+ const board=document.getElementById("teacherScheduleBoard");
+ const summary=document.getElementById("teacherScheduleSummary");
+ const list=document.getElementById("teacherScheduleList");
+ if(!select||!board||!summary||!list) return;
+
+ const teachers=allTeacherNames();
+ const prev=select.value;
+ select.innerHTML=teachers.length
+  ?teachers.map(n=>'<option value="'+esc(n)+'">'+esc(n)+'</option>').join("")
+  :'<option value="">No teachers yet</option>';
+ if(prev&&teachers.indexOf(prev)>=0) select.value=prev;
+
+ const teacherName=select.value;
+ if(!teacherName){
+  summary.innerHTML="";
+  board.innerHTML='<p class="empty">Add teachers on the Subjects tab first.</p>';
+  list.innerHTML="";
+  return;
+ }
+
+ const slots=lessonsForTeacherName(teacherName);
+ const subjects=subjectsTaughtByTeacherName(teacherName);
+ const classes=Array.from(new Set(slots.map(s=>s.classObj.name))).sort((a,b)=>a.localeCompare(b));
+
+ summary.innerHTML=
+  '<div class="notice" style="margin-top:14px">'+
+   '<strong>'+esc(teacherName)+'</strong><br>'+
+   'Lessons this week: <strong>'+slots.length+'</strong> / '+LESSONS_PER_TEACHER+
+   (subjects.length?' · Subjects: '+esc(subjects.join(", ")):"")+
+   (classes.length?' · Classes: '+esc(classes.join(", ")):"")+
+  '</div>';
+
+ const bySlot={};
+ slots.forEach(slot=>{
+  const sk=slot.day+"|"+slot.period;
+  if(!bySlot[sk]) bySlot[sk]=[];
+  bySlot[sk].push(slot);
+ });
+
+ let html='<table class="day-board"><thead><tr><th class="period-label">Period</th>'+
+  DAYS.map(day=>'<th>'+esc(day)+'</th>').join("")+
+  '</tr></thead><tbody>';
+
+ PERIODS.forEach(period=>{
+  if(period.number===3){
+   html+='<tr><td class="period-label">Lunch</td>'+
+    '<td colspan="'+DAYS.length+'"><div class="lunch" style="margin:0">🍽 11:30–12:30</div></td></tr>';
+  }
+  html+='<tr><td class="period-label">Period '+period.number+
+   '<br><small style="font-weight:normal;color:#667085">'+period.start+"–"+period.end+"</small></td>";
+  DAYS.forEach(day=>{
+   const cell=bySlot[day+"|"+period.number]||[];
+   if(!cell.length){
+    html+='<td><span class="muted">—</span></td>';
+    return;
+   }
+   html+='<td>'+cell.map(slot=>{
+    const shared=cell.length>1?" · shared":"";
+    return '<div style="margin-bottom:6px"><strong>'+esc(slot.classObj.name)+'</strong>'+
+     '<br><small>'+esc(slot.subjectName)+' · Year '+slot.classObj.year+shared+"</small></div>";
+   }).join("")+'</td>';
+  });
+  html+='</tr>';
+ });
+ html+='</tbody></table>';
+ board.innerHTML=html;
+
+ if(!slots.length){
+  list.innerHTML='<p class="empty">No lessons scheduled for this teacher yet.</p>';
+  return;
+ }
+
+ list.innerHTML=
+  '<h3 style="margin-top:20px">Lesson list</h3>'+
+  '<div class="table-wrap"><table><thead><tr><th>Day</th><th>Period</th><th>Time</th><th>Class</th><th>Year</th><th>Subject</th></tr></thead><tbody>'+
+  slots.map(slot=>{
+   const p=PERIODS.find(x=>x.number===slot.period);
+   return '<tr><td>'+esc(slot.day)+'</td><td>'+slot.period+'</td><td>'+
+    (p?p.start+"–"+p.end:"")+'</td><td>'+esc(slot.classObj.name)+'</td><td>'+
+    slot.classObj.year+'</td><td>'+esc(slot.subjectName)+'</td></tr>';
+  }).join("")+
+  '</tbody></table></div>';
+}
+
+document.getElementById("selectedTeacher").addEventListener("change",renderTeacherSchedule);
 
 function renderDiscipline(){
  const studentSelect=document.getElementById("detentionStudent");
@@ -3122,6 +3268,7 @@ function startUi(){
  renderStudents();
  renderDiscipline();
  renderSubjects();
+ renderTeacherSchedule();
  renderEditor();
 }
 
